@@ -9,12 +9,17 @@
 //! `process` on fixed-size blocks.
 
 mod audio;
+mod live;
 mod master;
 mod player;
 mod reader;
 mod strip;
 
 pub use audio::TrackAudio;
+pub use live::{
+    Command, DeckParam, DeckStatus, EngineHandle, Garbage, HOT_CUES, LiveConfig, LiveEngine,
+    MAX_DECKS, Status, XfSide,
+};
 pub use master::Master;
 pub use player::PlanPlayer;
 pub use reader::DeckReader;

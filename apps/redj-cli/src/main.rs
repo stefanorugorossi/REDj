@@ -68,6 +68,181 @@ enum Cmd {
         #[arg(short, long, default_value_t = 4)]
         count: usize,
     },
+    /// List the Ollama models and whether they support tool calling.
+    Models {
+        #[command(flatten)]
+        ollama: OllamaArgs,
+    },
+    /// Build a set from a music folder with the AI (or the built-in
+    /// planner) and render it.
+    Set {
+        /// Folders (or files) with the music.
+        #[arg(required = true)]
+        music: Vec<PathBuf>,
+        /// Output WAV file.
+        #[arg(short, long)]
+        out: PathBuf,
+        /// Approximate set length in minutes.
+        #[arg(long)]
+        minutes: Option<f64>,
+        /// Maximum number of tracks.
+        #[arg(long)]
+        max_tracks: Option<usize>,
+        /// Wishes for the AI, e.g. "dark and driving".
+        #[arg(long)]
+        notes: Option<String>,
+        /// Use the built-in planner instead of the AI.
+        #[arg(long)]
+        no_ai: bool,
+        /// Enable the model's thinking mode (slower, sometimes better).
+        #[arg(long)]
+        think: bool,
+        /// Also write a 320 kbps MP3.
+        #[arg(long)]
+        mp3: bool,
+        /// Only plan: write the plan JSON here and skip rendering.
+        #[arg(long)]
+        plan_only: Option<PathBuf>,
+        #[command(flatten)]
+        ollama: OllamaArgs,
+    },
+    /// Run the MCP server on stdin/stdout (for Claude Code / Desktop).
+    Mcp {
+        /// Folders (or files) with the music.
+        #[arg(short, long, required = true)]
+        music: Vec<PathBuf>,
+        /// Folder where `render_mix` writes files (rendering disabled
+        /// without it).
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
+    },
+}
+
+#[derive(clap::Args)]
+struct OllamaArgs {
+    /// Ollama model.
+    #[arg(long, default_value = "qwen3.6:35b-a3b-q4_K_M")]
+    model: String,
+    /// Ollama URL.
+    #[arg(long, default_value = redj_ai::DEFAULT_URL)]
+    ollama: String,
+    /// Timeout of one model request, in seconds.
+    #[arg(long, default_value_t = 900)]
+    timeout: u64,
+    /// Context window (tokens).
+    #[arg(long, default_value_t = 32768)]
+    num_ctx: u32,
+}
+
+fn print_report(rep: &redj_render::RenderReport) {
+    for w in &rep.warnings {
+        eprintln!("{w}");
+    }
+    println!(
+        "wrote {} ({:.1} min, {} Hz, {:.1} LUFS, {:.1} dBTP)",
+        rep.wav.display(),
+        rep.duration_sec / 60.0,
+        rep.sample_rate,
+        rep.integrated_lufs,
+        rep.true_peak_dbtp
+    );
+    if let Some(m) = &rep.mp3 {
+        println!("wrote {}", m.display());
+    }
+    for (i, t) in rep.tracklist.iter().enumerate() {
+        let s = t.start_sec as u64;
+        println!("  {:2}. {:02}:{:02}  {}", i + 1, s / 60, s % 60, t.title);
+    }
+}
+
+fn runtime() -> Result<tokio::runtime::Runtime> {
+    Ok(tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?)
+}
+
+fn print_event(e: &redj_ai::AgentEvent) {
+    use redj_ai::AgentEvent::*;
+    match e {
+        Request { turn } => eprintln!("[ai] turn {turn}: waiting for the model..."),
+        Response {
+            secs,
+            prompt_tokens,
+            output_tokens,
+            ..
+        } => eprintln!(
+            "[ai]   {secs:.0}s ({prompt_tokens} prompt tokens, {output_tokens} generated)"
+        ),
+        Thinking(t) => eprintln!("[ai]   thinking: {}", t.lines().next().unwrap_or("")),
+        Text(t) => eprintln!("[ai]   says: {}", t.trim()),
+        ToolCall { name, arguments } => eprintln!("[ai]   -> {name} {arguments}"),
+        ToolResult { name, ok, preview } => {
+            eprintln!(
+                "[ai]   <- {name} {}: {preview}",
+                if *ok { "ok" } else { "ERROR" }
+            )
+        }
+        Retry { error, .. } => eprintln!("[ai]   retrying after error: {error}"),
+    }
+}
+
+/// Plans a set with the AI; `None` when the AI is unavailable or failed
+/// (the caller falls back to the built-in planner).
+fn ai_plan(
+    session: &std::sync::Arc<redj_control::Session>,
+    req: &redj_ai::SetRequest,
+    o: &OllamaArgs,
+    think: bool,
+) -> Result<bool> {
+    let rt = runtime()?;
+    rt.block_on(async {
+        let client =
+            redj_ai::OllamaClient::new(&o.ollama, std::time::Duration::from_secs(o.timeout));
+        let caps = match client.capabilities(&o.model).await {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("AI unavailable ({e}); using the built-in planner");
+                return Ok(false);
+            }
+        };
+        if !caps.iter().any(|c| c == "tools") {
+            eprintln!(
+                "model {} does not support tool calling; using the built-in planner",
+                o.model
+            );
+            return Ok(false);
+        }
+        let cfg = redj_ai::AgentConfig {
+            model: o.model.clone(),
+            think: caps.iter().any(|c| c == "thinking").then_some(think),
+            num_ctx: o.num_ctx,
+            ..redj_ai::AgentConfig::default()
+        };
+        eprintln!(
+            "[ai] planning with {} (this can take several minutes on CPU)",
+            o.model
+        );
+        match redj_ai::plan_set(session.clone(), client, cfg, req, |e| print_event(&e)).await {
+            Ok(out) if session.accepted_plan().is_some() => {
+                eprintln!(
+                    "[ai] plan accepted after {} turns, {} tool calls",
+                    out.turns, out.tool_calls
+                );
+                Ok(true)
+            }
+            Ok(out) => {
+                eprintln!(
+                    "[ai] the model stopped without an accepted plan: {}",
+                    out.text.trim()
+                );
+                Ok(false)
+            }
+            Err(e) => {
+                eprintln!("[ai] failed: {e}; using the built-in planner");
+                Ok(false)
+            }
+        }
+    })
 }
 
 fn cache(cli: &Cli) -> Option<Cache> {
@@ -166,25 +341,84 @@ fn main() -> Result<()> {
                 mp3: *mp3,
                 ..RenderOptions::default()
             };
-            let rep = render_plan(&plan, &lib, out, &opts)?;
-            for w in &rep.warnings {
-                eprintln!("{w}");
+            print_report(&render_plan(&plan, &lib, out, &opts)?);
+        }
+        Cmd::Models { ollama } => {
+            let rt = runtime()?;
+            let client =
+                redj_ai::OllamaClient::new(&ollama.ollama, std::time::Duration::from_secs(30));
+            let models = rt.block_on(client.list_models())?;
+            for m in models {
+                println!(
+                    "{:40} {:6.1} GB  tools: {:3}  thinking: {}",
+                    m.name,
+                    m.size_bytes as f64 / 1e9,
+                    if m.supports_tools() { "yes" } else { "no" },
+                    if m.supports_thinking() { "yes" } else { "no" }
+                );
             }
-            println!(
-                "wrote {} ({:.1} min, {} Hz, {:.1} LUFS, {:.1} dBTP)",
-                rep.wav.display(),
-                rep.duration_sec / 60.0,
-                rep.sample_rate,
-                rep.integrated_lufs,
-                rep.true_peak_dbtp
-            );
-            if let Some(m) = &rep.mp3 {
-                println!("wrote {}", m.display());
+        }
+        Cmd::Set {
+            music,
+            out,
+            minutes,
+            max_tracks,
+            notes,
+            no_ai,
+            think,
+            mp3,
+            plan_only,
+            ollama,
+        } => {
+            let lib = load_library(&cli, music);
+            if lib.is_empty() {
+                bail!("no playable tracks found");
             }
-            for (i, t) in rep.tracklist.iter().enumerate() {
-                let s = t.start_sec as u64;
-                println!("  {:2}. {:02}:{:02}  {}", i + 1, s / 60, s % 60, t.title);
+            eprintln!("{} tracks analyzed", lib.len());
+            let session = std::sync::Arc::new(redj_control::Session::new(lib.clone()));
+            let req = redj_ai::SetRequest {
+                minutes: *minutes,
+                max_tracks: *max_tracks,
+                notes: notes.clone(),
+            };
+            let by_ai = !*no_ai && ai_plan(&session, &req, ollama, *think)?;
+            let plan = match session.accepted_plan() {
+                Some(p) if by_ai => p,
+                _ => {
+                    let p = redj_control::auto_plan(
+                        &lib,
+                        &redj_control::AutoPlanOptions {
+                            max_tracks: *max_tracks,
+                            target_minutes: *minutes,
+                            ..redj_control::AutoPlanOptions::default()
+                        },
+                    );
+                    eprintln!("built-in planner: {} tracks", p.entries.len());
+                    p
+                }
+            };
+            if let Some(path) = plan_only {
+                std::fs::write(path, serde_json::to_string_pretty(&plan)?)?;
+                println!("wrote {}", path.display());
+                return Ok(());
             }
+            let opts = RenderOptions {
+                mp3: *mp3,
+                ..RenderOptions::default()
+            };
+            print_report(&render_plan(&plan, &lib, out, &opts)?);
+        }
+        Cmd::Mcp { music, out_dir } => {
+            let lib = load_library(&cli, music);
+            eprintln!("redj MCP server: {} tracks", lib.len());
+            let mut session = redj_control::Session::new(lib);
+            if let Some(d) = out_dir {
+                std::fs::create_dir_all(d)?;
+                session = session.with_output_dir(d);
+            }
+            let rt = runtime()?;
+            rt.block_on(redj_mcp::serve_stdio(std::sync::Arc::new(session)))
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
         }
         Cmd::Synth { dir, count } => {
             std::fs::create_dir_all(dir)?;

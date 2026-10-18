@@ -1,6 +1,6 @@
 [package]
 name = "redj-control"
-description = "Session core: parameter ownership (human vs AI), pending plans, fallback autopilot."
+description = "Session core: library, plans, parameter ownership (human vs AI), fallback autopilot."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,6 +11,15 @@ publish = false
 redj-core.workspace = true
 redj-engine.workspace = true
 redj-plan.workspace = true
+redj-analysis.workspace = true
+redj-render.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+redj-testkit.workspace = true
 
 [lints]
 workspace = true
