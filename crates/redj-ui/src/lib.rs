@@ -21,6 +21,9 @@ use redj_midi::{GlobalKnob, Knob, Mapper, builtin_profiles};
 pub use settings::Settings;
 use widgets::*;
 
+/// Inner width of a mixer channel strip.
+const STRIP_W: f32 = 100.0;
+
 /// Command-line options of the GUI.
 #[derive(Debug, Clone, Default)]
 pub struct UiOptions {
@@ -76,6 +79,12 @@ pub struct RedjApp {
     learn_target: Option<redj_midi::Action>,
     /// Pending `--demo` steps.
     demo: u8,
+    /// Width of the mixer column in the last frame.
+    mixer_w: f32,
+    /// Height of the mixer column in the last frame.
+    mixer_h: f32,
+    /// Extra height given to the zoomed waveforms to match the mixer.
+    wave_extra: f32,
     ai: ai::AiState,
 }
 
@@ -127,6 +136,9 @@ impl RedjApp {
             status_line: err.map(|e| format!("audio: {e}")).unwrap_or_default(),
             learn_target: None,
             demo: u8::from(opts.demo),
+            mixer_w: 0.0,
+            mixer_h: 0.0,
+            wave_extra: 0.0,
             ai: ai::AiState::default(),
         };
         app.ai.refresh_models(&app.settings.ollama_url);
@@ -363,7 +375,7 @@ impl RedjApp {
                 st.rate,
                 zoom,
                 &marks,
-                110.0,
+                110.0 + self.wave_extra,
             );
             // Mouse wheel zooms the waveforms.
             if resp.hovered() {
@@ -606,25 +618,31 @@ impl RedjApp {
     fn mixer_strip(&mut self, ui: &mut Ui, d: usize) {
         let st = self.console.status().decks[d];
         ui.vertical(|ui| {
-            ui.set_width(56.0);
+            ui.set_width(STRIP_W);
             ui.label(
                 RichText::new(format!("{}", (b'A' + d as u8) as char))
                     .strong()
                     .color(ACCENT),
             );
-            for (k, label, default) in [
-                (Knob::Trim, "TRIM", 0.5),
-                (Knob::EqHigh, "HI", 0.5),
-                (Knob::EqMid, "MID", 0.5),
-                (Knob::EqLow, "LOW", 0.5),
-                (Knob::Filter, "FILTER", 0.5),
-                (Knob::Echo, "ECHO", 0.0),
-            ] {
-                let mut v = self.console.knob(d, k);
-                if knob(ui, &mut v, default, label, 24.0) {
-                    self.console.set_knob(d, k, v);
-                }
-            }
+            // Two columns (EQ | trim and effects) keep the strip as short as
+            // the decks, leaving the height to the library.
+            egui::Grid::new(("strip_knobs", d))
+                .spacing(vec2(4.0, 2.0))
+                .show(ui, |ui| {
+                    for row in [
+                        [(Knob::EqHigh, "HI", 0.5), (Knob::Trim, "TRIM", 0.5)],
+                        [(Knob::EqMid, "MID", 0.5), (Knob::Filter, "FILTER", 0.5)],
+                        [(Knob::EqLow, "LOW", 0.5), (Knob::Echo, "ECHO", 0.0)],
+                    ] {
+                        for (k, label, default) in row {
+                            let mut v = self.console.knob(d, k);
+                            if knob(ui, &mut v, default, label, 24.0) {
+                                self.console.set_knob(d, k, v);
+                            }
+                        }
+                        ui.end_row();
+                    }
+                });
             if toggle(
                 ui,
                 st.pfl,
@@ -679,35 +697,67 @@ impl RedjApp {
 
     fn mixer(&mut self, ui: &mut Ui) {
         ui.vertical(|ui| {
-            ui.horizontal(|ui| {
+            let mut channels = egui::Rect::NOTHING;
+            ui.horizontal_top(|ui| {
                 for d in 0..self.console.deck_count() {
-                    theme::neon_frame().show(ui, |ui| self.mixer_strip(ui, d));
+                    let r = theme::neon_frame()
+                        .show(ui, |ui| self.mixer_strip(ui, d))
+                        .response
+                        .rect;
+                    channels = channels.union(r);
                 }
+                // Master section as a strip of its own, as tall as the
+                // channels, with the headphone meter beside its knobs.
+                theme::neon_frame().show(ui, |ui| {
+                    ui.set_min_height(channels.height() - 16.0);
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new("MASTER").strong().color(ACCENT));
+                        ui.horizontal_top(|ui| {
+                            let knobs = ui.vertical(|ui| {
+                                for (k, label, default) in [
+                                    (GlobalKnob::MasterLevel, "MASTER", 0.75),
+                                    (GlobalKnob::CueMix, "CUE/MST", 0.0),
+                                    (GlobalKnob::PhonesLevel, "PHONES", 0.75),
+                                ] {
+                                    let mut v = self.console.global(k);
+                                    if knob(ui, &mut v, default, label, 28.0) {
+                                        self.console.set_global(k, v);
+                                    }
+                                }
+                            });
+                            let h = knobs.response.rect.height();
+                            vu(ui, "phones_vu", self.console.status().phones_peak, h);
+                        });
+                    });
+                });
             });
-            ui.horizontal(|ui| {
-                ui.label("XF");
-                let mut x = self.console.global(GlobalKnob::Crossfader);
-                let r = ui.add(egui::Slider::new(&mut x, 0.0..=1.0).show_value(false));
-                if r.changed() {
-                    self.console.set_global(GlobalKnob::Crossfader, x);
-                }
-                if r.double_clicked() {
-                    self.console.set_global(GlobalKnob::Crossfader, 0.5);
-                }
-            });
-            ui.horizontal(|ui| {
-                for (k, label, default) in [
-                    (GlobalKnob::MasterLevel, "MASTER", 0.75),
-                    (GlobalKnob::CueMix, "CUE/MST", 0.0),
-                    (GlobalKnob::PhonesLevel, "PHONES", 0.75),
-                ] {
-                    let mut v = self.console.global(k);
-                    if knob(ui, &mut v, default, label, 28.0) {
-                        self.console.set_global(k, v);
+            // Crossfader centred under the channel strips.
+            let w = channels.width().max(120.0);
+            ui.allocate_ui_with_layout(
+                vec2(w, 0.0),
+                egui::Layout::top_down(egui::Align::Center),
+                |ui| {
+                    ui.set_width(w);
+                    ui.label(
+                        RichText::new("CROSSFADER")
+                            .small()
+                            .color(Color32::from_gray(170)),
+                    );
+                    ui.spacing_mut().slider_width = w * 0.7;
+                    let mut x = self.console.global(GlobalKnob::Crossfader);
+                    // An exact rect: a bare slider lays out left-aligned.
+                    let r = ui.add_sized(
+                        vec2(w * 0.7, 20.0),
+                        egui::Slider::new(&mut x, 0.0..=1.0).show_value(false),
+                    );
+                    if r.changed() {
+                        self.console.set_global(GlobalKnob::Crossfader, x);
                     }
-                }
-                vu(ui, "phones_vu", self.console.status().phones_peak, 46.0);
-            });
+                    if r.double_clicked() {
+                        self.console.set_global(GlobalKnob::Crossfader, 0.5);
+                    }
+                },
+            );
         });
     }
 
@@ -1055,10 +1105,47 @@ impl eframe::App for RedjApp {
             .show(ui, |ui| {
                 ui.label(RichText::new(&self.status_line).small());
             });
-        egui::Panel::bottom("library")
+        // Decks and mixer take the height they need; library and AI panel
+        // get everything below.
+        egui::Panel::top("decks")
+            .resizable(false)
+            .show_separator_line(false)
+            .show(ui, |ui| {
+                let decks = self.console.deck_count();
+                let gap = ui.spacing().item_spacing.x;
+                // The mixer's width as laid out last frame (frames and
+                // spacing included); the decks share the rest.
+                let deck_w = ((ui.available_width() - self.mixer_w - 2.0 * gap) / 2.0).max(300.0);
+                // Decks stand as tall as the mixer: the zoomed waveform takes
+                // up the difference (measured last frame, settles at once).
+                let rows = decks.div_ceil(2) as f32;
+                let target = (self.mixer_h - (rows - 1.0) * ui.spacing().item_spacing.y) / rows;
+                let column = |app: &mut Self, ui: &mut Ui, first: usize| {
+                    ui.allocate_ui(vec2(deck_w, 0.0), |ui| {
+                        ui.set_width(deck_w);
+                        ui.vertical(|ui| {
+                            for d in (first..decks).step_by(2) {
+                                let h = theme::neon_frame()
+                                    .show(ui, |ui| app.deck_panel(ui, d))
+                                    .response
+                                    .rect
+                                    .height();
+                                if d == 0 {
+                                    app.wave_extra = (app.wave_extra + target - h).max(0.0);
+                                }
+                            }
+                        });
+                    });
+                };
+                ui.horizontal_top(|ui| {
+                    column(self, ui, 0);
+                    let mixer = ui.vertical(|ui| self.mixer(ui)).response.rect;
+                    (self.mixer_w, self.mixer_h) = (mixer.width(), mixer.height());
+                    column(self, ui, 1);
+                });
+            });
+        egui::CentralPanel::default()
             .frame(theme::bar_frame().stroke(egui::Stroke::new(3.0, theme::RED)))
-            .resizable(true)
-            .default_size(220.0)
             .show(ui, |ui| {
                 egui::Panel::right("ai_panel")
                     .frame(theme::bar_frame().stroke(egui::Stroke::new(2.0, widgets::AI)))
@@ -1067,38 +1154,6 @@ impl eframe::App for RedjApp {
                     .show(ui, |ui| ai::panel(ui, &mut self.console));
                 self.library(ui);
             });
-        egui::CentralPanel::default().show(ui, |ui| {
-            let decks = self.console.deck_count();
-            let mixer_w = 118.0 * decks as f32 + 12.0;
-            let deck_w = ((ui.available_width() - mixer_w) / 2.0).max(300.0);
-            let left: Vec<usize> = (0..decks).filter(|d| d % 2 == 0).collect();
-            let right: Vec<usize> = (0..decks).filter(|d| d % 2 == 1).collect();
-            egui::Panel::left("decks_left")
-                .exact_size(deck_w)
-                .resizable(false)
-                .show_separator_line(false)
-                .show(ui, |ui| {
-                    for d in &left {
-                        theme::neon_frame().show(ui, |ui| self.deck_panel(ui, *d));
-                    }
-                    theme::watermark(ui);
-                });
-            egui::Panel::right("decks_right")
-                .exact_size(deck_w)
-                .resizable(false)
-                .show_separator_line(false)
-                .show(ui, |ui| {
-                    for d in &right {
-                        theme::neon_frame().show(ui, |ui| self.deck_panel(ui, *d));
-                    }
-                    theme::watermark(ui);
-                });
-            let est = 124.0 * decks as f32;
-            ui.horizontal_top(|ui| {
-                ui.add_space(((ui.available_width() - est) / 2.0).max(0.0));
-                ui.vertical(|ui| self.mixer(ui));
-            });
-        });
         if self.show_settings {
             self.settings_window(ui);
         }
