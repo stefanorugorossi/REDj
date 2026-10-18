@@ -16,8 +16,46 @@ pub const BLACK: Color32 = Color32::from_rgb(8, 8, 10);
 /// Neon yellow for active states.
 pub const NEON: Color32 = Color32::from_rgb(255, 230, 0);
 
+/// Display font family (Bungee) for the logo and big numbers.
+pub fn display() -> FontFamily {
+    FontFamily::Name("display".into())
+}
+
+/// Installs the fonts: Russo One for the interface, Bungee for display text
+/// (both SIL Open Font License, see `assets/fonts`).
+fn fonts(ctx: &egui::Context) {
+    use std::sync::Arc;
+    let mut f = egui::FontDefinitions::default();
+    f.font_data.insert(
+        "russo".into(),
+        Arc::new(egui::FontData::from_static(include_bytes!(
+            "../assets/fonts/RussoOne-Regular.ttf"
+        ))),
+    );
+    f.font_data.insert(
+        "bungee".into(),
+        Arc::new(egui::FontData::from_static(include_bytes!(
+            "../assets/fonts/Bungee-Regular.ttf"
+        ))),
+    );
+    if let Some(p) = f.families.get_mut(&FontFamily::Proportional) {
+        p.insert(0, "russo".into());
+    }
+    // Fall back to the default fonts for symbols Bungee lacks.
+    let mut d = vec!["bungee".to_owned(), "russo".to_owned()];
+    d.extend(
+        f.families
+            .get(&FontFamily::Proportional)
+            .cloned()
+            .unwrap_or_default(),
+    );
+    f.families.insert(display(), d);
+    ctx.set_fonts(f);
+}
+
 /// Applies the global visuals and text sizes.
 pub fn apply(ctx: &egui::Context) {
+    fonts(ctx);
     let mut v = egui::Visuals::dark();
     v.panel_fill = RED_BG;
     v.window_fill = BLACK;
@@ -65,10 +103,7 @@ pub fn apply(ctx: &egui::Context) {
                 TextStyle::Button,
                 FontId::new(15.0, FontFamily::Proportional),
             ),
-            (
-                TextStyle::Heading,
-                FontId::new(22.0, FontFamily::Proportional),
-            ),
+            (TextStyle::Heading, FontId::new(22.0, display())),
             (
                 TextStyle::Monospace,
                 FontId::new(14.0, FontFamily::Monospace),
@@ -104,7 +139,11 @@ pub fn bar_frame() -> Frame {
 
 /// Draws `text` large and glowing in red, faux-bold. Returns its width.
 pub fn glow_text(ui: &mut Ui, text: &str, size: f32, color: Color32) -> f32 {
-    let font = FontId::new(size, FontFamily::Proportional);
+    glow_text_font(ui, text, FontId::new(size, display()), color)
+}
+
+/// Like [`glow_text`] with an explicit font.
+pub fn glow_text_font(ui: &mut Ui, text: &str, font: FontId, color: Color32) -> f32 {
     let galley = ui
         .painter()
         .layout_no_wrap(text.to_owned(), font.clone(), color);
@@ -147,8 +186,14 @@ pub fn glow_text(ui: &mut Ui, text: &str, size: f32, color: Color32) -> f32 {
 }
 
 /// The REDj logo.
+/// The display font has capitals only; the brand's lowercase "j" is set
+/// in the interface font, slightly larger.
 pub fn logo(ui: &mut Ui) {
-    glow_text(ui, "REDj", 34.0, RED);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = -6.0;
+        glow_text(ui, "RED", 34.0, RED);
+        glow_text_font(ui, "j", FontId::new(44.0, FontFamily::Proportional), RED);
+    });
 }
 
 /// Big embossed "REDj" filling the free space left in `ui`, if any.
@@ -157,22 +202,34 @@ pub fn watermark(ui: &mut Ui) {
     if r.height() < 120.0 {
         return;
     }
-    let size = (r.height() * 0.75).min(r.width() * 0.32);
-    let at = r.center();
-    let font = FontId::proportional(size);
+    let size = (r.height() * 0.75).min(r.width() * 0.3);
     let p = ui.painter();
-    p.text(
-        at + vec2(5.0, 5.0),
-        Align2::CENTER_CENTER,
-        "REDj",
-        font.clone(),
-        Color32::from_rgb(80, 0, 6),
+    let red = p.layout_no_wrap("RED".into(), FontId::new(size, display()), Color32::WHITE);
+    let j = p.layout_no_wrap(
+        "j".into(),
+        FontId::new(size * 1.3, FontFamily::Proportional),
+        Color32::WHITE,
     );
-    p.text(
-        at,
-        Align2::CENTER_CENTER,
-        "REDj",
-        font,
-        Color32::from_rgb(205, 12, 30),
-    );
+    let w = red.size().x + j.size().x - size * 0.08;
+    let left = r.center().x - w / 2.0;
+    let y = r.center().y;
+    for (off, color) in [
+        (vec2(5.0, 5.0), Color32::from_rgb(80, 0, 6)),
+        (vec2(0.0, 0.0), Color32::from_rgb(205, 12, 30)),
+    ] {
+        p.text(
+            egui::pos2(left, y) + off,
+            Align2::LEFT_CENTER,
+            "RED",
+            FontId::new(size, display()),
+            color,
+        );
+        p.text(
+            egui::pos2(left + red.size().x - size * 0.08, y) + off,
+            Align2::LEFT_CENTER,
+            "j",
+            FontId::new(size * 1.3, FontFamily::Proportional),
+            color,
+        );
+    }
 }

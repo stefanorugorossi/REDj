@@ -13,7 +13,8 @@ pub const AI: Color32 = Color32::from_rgb(170, 110, 255);
 /// A rotary knob: drag vertically, double-click to reset. Returns true
 /// when the value changed.
 pub fn knob(ui: &mut Ui, value: &mut f32, default: f32, label: &str, size: f32) -> bool {
-    let (rect, resp) = ui.allocate_exact_size(vec2(size, size + 14.0), Sense::click_and_drag());
+    let (rect, resp) =
+        ui.allocate_exact_size(vec2(size.max(44.0), size + 14.0), Sense::click_and_drag());
     let mut changed = false;
     if resp.dragged() {
         let d = -resp.drag_delta().y / 150.0;
@@ -50,35 +51,73 @@ pub fn knob(ui: &mut Ui, value: &mut f32, default: f32, label: &str, size: f32) 
         pos2(rect.center().x, rect.bottom() - 6.0),
         Align2::CENTER_CENTER,
         label,
-        FontId::proportional(10.0),
+        FontId::proportional(9.0),
         Color32::from_gray(180),
     );
     resp.on_hover_text(format!("{label}: {:.0}%", *value * 100.0));
     changed
 }
 
-/// Vertical level meter (peak 0..1).
-pub fn vu(ui: &mut Ui, level: f32, height: f32) {
-    let (rect, _) = ui.allocate_exact_size(vec2(8.0, height), Sense::hover());
-    let p = ui.painter();
-    p.rect_filled(rect, 1.0, Color32::from_gray(25));
+/// LED-segment level meter (`level` = peak 0..1) with smooth fall and a
+/// peak-hold LED. `id` keeps the meter's ballistics between frames.
+pub fn vu(ui: &mut Ui, id: impl std::hash::Hash + std::fmt::Debug, level: f32, height: f32) {
+    const SEG: f32 = 4.0;
+    const GAP: f32 = 2.0;
+    let (rect, _) = ui.allocate_exact_size(vec2(12.0, height), Sense::hover());
+    let id = egui::Id::unique(("redj_vu", id));
+    let dt = ui.input(|i| i.stable_dt).min(0.1);
     let db = 20.0 * level.max(1e-5).log10();
-    let frac = ((db + 48.0) / 48.0).clamp(0.0, 1.0);
-    let top = rect.bottom() - rect.height() * frac;
-    let color = if db > -1.5 {
-        ACCENT
-    } else if db > -9.0 {
-        Color32::from_rgb(240, 200, 40)
+    let target = ((db + 48.0) / 51.0).clamp(0.0, 1.0); // -48..+3 dBFS
+    let (mut shown, mut peak, mut hold) = ui
+        .ctx()
+        .data(|d| d.get_temp::<(f32, f32, f32)>(id))
+        .unwrap_or((0.0, 0.0, 0.0));
+    // Fast attack, ~1.5 s full-scale fall, 1 s peak hold.
+    shown = if target > shown {
+        target
     } else {
-        Color32::from_rgb(60, 200, 90)
+        (shown - dt / 1.5).max(target)
     };
-    p.rect_filled(
-        Rect::from_min_max(pos2(rect.left(), top), rect.max),
-        1.0,
-        color,
-    );
-}
+    if target >= peak {
+        peak = target;
+        hold = 1.0;
+    } else if hold > 0.0 {
+        hold -= dt;
+    } else {
+        peak = (peak - dt / 2.0).max(shown);
+    }
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(id, (shown, peak, hold)));
 
+    let p = ui.painter();
+    p.rect_filled(rect.expand(1.0), 2.0, Color32::BLACK);
+    let n = ((rect.height() + GAP) / (SEG + GAP)).floor().max(1.0) as usize;
+    let lit = (shown * n as f32).round() as usize;
+    let peak_seg = ((peak * n as f32).round() as usize).clamp(1, n) - 1;
+    for i in 0..n {
+        let frac = (i as f32 + 0.5) / n as f32;
+        let base = if frac > 0.88 {
+            Color32::from_rgb(255, 30, 30)
+        } else if frac > 0.65 {
+            Color32::from_rgb(255, 210, 0)
+        } else {
+            Color32::from_rgb(40, 255, 70)
+        };
+        let on = i < lit || (i == peak_seg && peak > 0.02);
+        let y1 = rect.bottom() - i as f32 * (SEG + GAP);
+        let r = Rect::from_min_max(
+            pos2(rect.left() + 1.0, y1 - SEG),
+            pos2(rect.right() - 1.0, y1),
+        );
+        if on {
+            p.rect_filled(r.expand(1.0), 1.0, base.gamma_multiply(0.35));
+            p.rect_filled(r, 1.0, base);
+        } else {
+            p.rect_filled(r, 1.0, base.gamma_multiply(0.12));
+        }
+    }
+    ui.ctx().request_repaint();
+}
 fn bin_color_bars(
     p: &egui::Painter,
     x: f32,
@@ -149,7 +188,7 @@ pub fn zoomed_waveform(
                 r.left_top() + vec2(3.0, 2.0),
                 Align2::LEFT_TOP,
                 label,
-                FontId::proportional(10.0),
+                FontId::proportional(9.0),
                 AI,
             );
         }
@@ -229,7 +268,7 @@ pub fn zoomed_waveform(
                 pos2(x + 2.0, rect.bottom() - 12.0),
                 Align2::LEFT_TOP,
                 label,
-                FontId::proportional(10.0),
+                FontId::proportional(9.0),
                 c,
             );
         }

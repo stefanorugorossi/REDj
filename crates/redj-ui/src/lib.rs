@@ -253,7 +253,7 @@ impl RedjApp {
                 }
                 let gr = 20.0 * st.limiter_gain.max(1e-5).log10();
                 ui.label(RichText::new(format!("GR {gr:+.1} dB")).monospace().small());
-                vu(ui, st.master_peak, 22.0);
+                vu(ui, "master_vu", st.master_peak, 40.0);
             });
         });
     }
@@ -621,7 +621,7 @@ impl RedjApp {
                 (Knob::Echo, "ECHO", 0.0),
             ] {
                 let mut v = self.console.knob(d, k);
-                if knob(ui, &mut v, default, label, 28.0) {
+                if knob(ui, &mut v, default, label, 24.0) {
                     self.console.set_knob(d, k, v);
                 }
             }
@@ -662,7 +662,8 @@ impl RedjApp {
             ui.horizontal(|ui| {
                 let mut v = self.console.knob(d, Knob::Volume);
                 if ui
-                    .add(
+                    .add_sized(
+                        vec2(18.0, 78.0),
                         egui::Slider::new(&mut v, 0.0..=1.0)
                             .vertical()
                             .show_value(false),
@@ -671,7 +672,7 @@ impl RedjApp {
                 {
                     self.console.set_knob(d, Knob::Volume, v);
                 }
-                vu(ui, st.peak, 90.0);
+                vu(ui, ("deck_vu", d), st.peak, 78.0);
             });
         });
     }
@@ -701,11 +702,11 @@ impl RedjApp {
                     (GlobalKnob::PhonesLevel, "PHONES", 0.75),
                 ] {
                     let mut v = self.console.global(k);
-                    if knob(ui, &mut v, default, label, 34.0) {
+                    if knob(ui, &mut v, default, label, 28.0) {
                         self.console.set_global(k, v);
                     }
                 }
-                vu(ui, self.console.status().phones_peak, 46.0);
+                vu(ui, "phones_vu", self.console.status().phones_peak, 46.0);
             });
         });
     }
