@@ -14,3 +14,26 @@ tracing-subscriber.workspace = true
 
 [lints]
 workspace = true
+
+# Installers: `cargo packager --release` from this directory.
+[package.metadata.packager]
+product-name = "REDj"
+identifier = "org.redj.console"
+publisher = "REDj contributors"
+category = "Music"
+description = "AI DJ console: a native DJ mixer with an AI director over MCP."
+license-file = "../../LICENSE"
+before-packaging-command = "cargo build --release -p redj -p redj-cli"
+binaries-dir = "../../target/release"
+out-dir = "../../target/packages"
+binaries = [
+    { path = "redj", main = true },
+    { path = "redj-cli", main = false },
+]
+icons = ["icons/icon-32.png", "icons/icon-128.png", "icons/icon-256.png", "icons/icon-512.png"]
+
+[package.metadata.packager.deb]
+depends = ["libasound2"]
+
+[package.metadata.packager.nsis]
+installer-mode = "currentUser"

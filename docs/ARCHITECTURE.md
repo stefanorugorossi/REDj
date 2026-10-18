@@ -245,22 +245,58 @@ GPL-compatible (e.g. LAME for MP3 encoding, a C++ time-stretch library).
 
 ## Testing
 
-- Synthetic reference tracks generated in tests (known BPM, downbeats and
-  sections): deterministic and license-free. Real tracks can be used locally
-  but are never committed.
-- Unit tests for analysis, plan validation, scheduler sample accuracy.
-- Golden render hashes.
-- Mock LLM for `redj-ai` and fallback paths without Ollama.
+- Synthetic reference tracks generated in tests (known BPM, downbeats,
+  sections, key): deterministic and license-free. Real tracks can be used
+  locally but are never committed.
+- Analysis accuracy on the reference tracks: exact BPM (including 174.5),
+  grid within 1 ms of the true downbeat, every section boundary within one
+  bar with the right label, key within one Camelot step.
+- Plan validation and compilation, sample-accurate loops, block-size
+  independence, beat lock through tempo glides.
+- Determinism: two renders of the same plan are bit-identical (compared in
+  the test rather than against stored golden hashes, which would differ
+  between platforms).
+- Live engine: transport, sync, loops, AI transitions with overrides, all
+  run under `assert_no_alloc` to prove the callback never allocates.
+- Mock LLM for `redj-ai`: offline set planning, live planning through MCP,
+  autopilot and rejection; an ignored test runs the real Ollama model.
 - Virtual MIDI controller: the mapping layer consumes an abstract message
   source, so tests inject messages on every OS (midir has no virtual ports
-  on Windows).
-- Audio callback benchmarks and xrun checks under load.
+  on Windows); every built-in profile is checked for the essential controls.
+- `cargo bench -p redj-engine --bench live`: on the development machine a
+  512-frame block with four keylocked decks at different tempos takes
+  0.39 ms on average (3.4% of the 11.6 ms budget), 2.0 ms worst case.
+
+## MIDI profiles
+
+Built in: Pioneer DDJ-FLX4 (hand-written from the message list), Pioneer
+DDJ-400 and Hercules DJControl Inpulse 200/300 (generated with
+`cargo run -p redj-midi --example mixxx2redj -- <mapping.midi.xml> <out.json>`
+from the Mixxx mappings, GPL-2.0-or-later). The converter translates standard
+Mixxx controls and recognizes script-bound jog, shift, play, cue, sync, load
+and tempo controls by name; controllers whose mappings are mostly scripts
+(e.g. Numark Mixtrack FX, DDJ-SB3) do not convert usefully. None of the
+profiles has been tested on hardware; MIDI learn covers the gaps.
+
+## Packaging
+
+`cargo packager --release` in `apps/redj` (cargo-packager) builds the
+installer for the current platform: NSIS `.exe` on Windows (verified),
+`.app`/`.dmg` on macOS, `.deb`/AppImage on Linux. Both binaries (`redj`,
+`redj-cli`) are included. `.github/workflows/release.yml` builds all three
+on tagged releases once the repository has a GitHub remote.
 
 ## Milestones
 
-0. Toolchain, workspace skeleton, CI, this document.
-1. Analysis + offline render from a hand-written plan (no AI).
-2. MCP server + AI host with Ollama: fully AI-driven offline mix.
+0. Toolchain, workspace skeleton, CI, this document. Done.
+1. Analysis + offline render from a hand-written plan (no AI). Done.
+2. MCP server + AI host with Ollama: fully AI-driven offline mix. Done.
 3. Live 2-deck engine with UI, headphone cue, DDJ-FLX4 MIDI profile; no AI.
-4. Live AI director: ahead-of-time planning, fallback, overrides.
+   Done.
+4. Live AI director: ahead-of-time planning, fallback, overrides. Done.
 5. Polish, 4 decks, more MIDI profiles, packaging for the three platforms.
+   Done (macOS and Linux packages built by CI only).
+
+Known gaps: MIDI profiles untested on hardware; the loader publishes a track
+after decoding it completely; the headphone output must share the master's
+device; MP3 output needs a C compiler (LAME).

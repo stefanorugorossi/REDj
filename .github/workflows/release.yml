@@ -1,0 +1,55 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  package:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            formats: nsis
+          - os: macos-latest
+            formats: app,dmg
+          - os: ubuntu-latest
+            formats: deb,appimage
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux audio, MIDI and windowing libraries
+        if: runner.os == 'Linux'
+        run: >
+          sudo apt-get update && sudo apt-get install -y pkg-config libasound2-dev
+          libjack-jackd2-dev libxkbcommon-dev libwayland-dev libxcb1-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --locked
+      - name: Build installers
+        working-directory: apps/redj
+        run: cargo packager --release --formats ${{ matrix.formats }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: redj-${{ matrix.os }}
+          path: |
+            target/packages/*.exe
+            target/packages/*.dmg
+            target/packages/*.deb
+            target/packages/*.AppImage
+      - name: Attach to the GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            target/packages/*.exe
+            target/packages/*.dmg
+            target/packages/*.deb
+            target/packages/*.AppImage

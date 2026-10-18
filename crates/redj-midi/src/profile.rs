@@ -151,8 +151,13 @@ impl Profile {
 
 /// Built-in profiles.
 pub fn builtin_profiles() -> Vec<Profile> {
-    [include_str!("../profiles/pioneer-ddj-flx4.json")]
-        .iter()
-        .map(|s| Profile::from_json(s).expect("built-in profile parses"))
-        .collect()
+    [
+        include_str!("../profiles/pioneer-ddj-flx4.json"),
+        include_str!("../profiles/pioneer-ddj-400.json"),
+        include_str!("../profiles/hercules-inpulse-200.json"),
+        include_str!("../profiles/hercules-inpulse-300.json"),
+    ]
+    .iter()
+    .map(|s| Profile::from_json(s).expect("built-in profile parses"))
+    .collect()
 }

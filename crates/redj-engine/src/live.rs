@@ -47,9 +47,10 @@ pub enum DeckParam {
 }
 
 /// Crossfader assignment of a deck.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum XfSide {
     Left,
+    #[default]
     Thru,
     Right,
 }
@@ -220,6 +221,7 @@ pub struct DeckStatus {
     pub echo: f32,
     /// Tempo fader position -1..1.
     pub tempo: f32,
+    pub xf: XfSide,
 }
 
 /// Snapshot of the engine.
@@ -1237,6 +1239,7 @@ impl LiveEngine {
                 filter: d.eff.filter,
                 echo: d.eff.echo_send,
                 tempo: d.tempo,
+                xf: d.xf,
             };
         }
         *slot = st;

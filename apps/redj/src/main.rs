@@ -17,6 +17,9 @@ struct Cli {
     /// Start with the AI director on (needs Ollama).
     #[arg(long)]
     ai: bool,
+    /// Number of decks: 2 or 4.
+    #[arg(long)]
+    decks: Option<usize>,
 }
 
 fn main() {
@@ -31,6 +34,7 @@ fn main() {
         music: cli.music,
         demo: cli.demo,
         ai: cli.ai,
+        decks: cli.decks,
     }) {
         eprintln!("REDj failed to start: {e}");
         std::process::exit(1);

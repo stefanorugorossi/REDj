@@ -10,6 +10,12 @@ through MCP, selectable among the models installed in Ollama.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+## Install
+
+Installers are built with `cargo packager --release` in `apps/redj` (see
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#packaging)); on Windows this produces
+`target/packages/redj_<version>_x64-setup.exe`.
+
 ## Build
 
 ```sh
@@ -30,9 +36,10 @@ redj --demo --ai demo/       # ...with the AI director on (needs Ollama)
 ```
 
 Audio device, master and headphone channel pairs, MIDI controller and MIDI
-learn are in Settings. A DDJ-FLX4 is detected automatically (its profile is
-built from the published MIDI message list and has not been tested on
-hardware yet).
+learn are in Settings. Controllers with a built-in profile are detected
+automatically: Pioneer DDJ-FLX4 and DDJ-400, Hercules DJControl Inpulse 200
+and 300 (none tested on hardware yet; MIDI learn covers anything else). Use
+`--decks 4` for four decks; the mouse wheel zooms the waveforms.
 
 With the **AI** switch on, the AI director plans each next transition while
 the current track plays and the engine executes it on the beat. The panel

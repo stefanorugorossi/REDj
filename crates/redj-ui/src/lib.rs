@@ -13,8 +13,8 @@ use egui::{Color32, RichText, Ui, vec2};
 use redj_analysis::{AnalysisOptions, default_cache, library_from_dirs};
 use redj_control::{Console, Session};
 use redj_core::{Library, TrackId};
-use redj_engine::Command;
 use redj_engine::driver::{Routing, output_devices};
+use redj_engine::{Command, XfSide};
 use redj_midi::{GlobalKnob, Knob, Mapper, builtin_profiles};
 
 pub use settings::Settings;
@@ -29,6 +29,8 @@ pub struct UiOptions {
     pub demo: bool,
     /// Start with the AI director on.
     pub ai: bool,
+    /// Number of decks (overrides the saved setting).
+    pub decks: Option<usize>,
 }
 
 /// Runs the GUI until the window closes.
@@ -38,7 +40,13 @@ pub fn run(opts: UiOptions) -> eframe::Result {
             .with_title("REDj")
             .with_inner_size([1280.0, 760.0])
             .with_maximized(true)
-            .with_min_inner_size([960.0, 600.0]),
+            .with_min_inner_size([960.0, 600.0])
+            .with_icon(
+                eframe::icon_data::from_png_bytes(include_bytes!(
+                    "../../../apps/redj/icons/icon-256.png"
+                ))
+                .unwrap_or_default(),
+            ),
         ..Default::default()
     };
     eframe::run_native(
@@ -84,6 +92,9 @@ impl RedjApp {
     fn new(cc: &eframe::CreationContext<'_>, opts: UiOptions) -> Self {
         style(&cc.egui_ctx);
         let mut settings = Settings::load();
+        if let Some(n) = opts.decks {
+            settings.decks = if n > 2 { 4 } else { 2 };
+        }
         for d in opts.music {
             if !settings.music_dirs.contains(&d) {
                 settings.music_dirs.push(d);
@@ -362,6 +373,14 @@ impl RedjApp {
                 &marks,
                 110.0,
             );
+            // Mouse wheel zooms the waveforms.
+            if resp.hovered() {
+                let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+                if scroll != 0.0 {
+                    self.settings.zoom_sec =
+                        (self.settings.zoom_sec * (1.0 - scroll * 0.003)).clamp(2.0, 30.0);
+                }
+            }
             // Drag the waveform to scrub/nudge like a jog wheel.
             if resp.drag_started() {
                 self.console.send(Command::JogTouch { deck: d, on: true });
@@ -567,7 +586,7 @@ impl RedjApp {
                     .console
                     .browse_order()
                     .iter()
-                    .take(2)
+                    .take(self.console.deck_count())
                     .cloned()
                     .collect();
                 for (d, id) in ids.iter().enumerate() {
@@ -628,6 +647,26 @@ impl RedjApp {
                     on: !st.pfl,
                 });
             }
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 1.0;
+                for (side, label) in [
+                    (XfSide::Left, "L"),
+                    (XfSide::Thru, "T"),
+                    (XfSide::Right, "R"),
+                ] {
+                    let r = toggle(
+                        ui,
+                        st.xf == side,
+                        label,
+                        Color32::from_gray(200),
+                        vec2(17.0, 16.0),
+                    )
+                    .on_hover_text("crossfader assignment");
+                    if r.clicked() {
+                        self.console.send(Command::XfAssign { deck: d, side });
+                    }
+                }
+            });
             ui.horizontal(|ui| {
                 let mut v = self.console.knob(d, Knob::Volume);
                 if ui
@@ -1031,7 +1070,7 @@ impl eframe::App for RedjApp {
             });
         egui::CentralPanel::default().show(ui, |ui| {
             let decks = self.console.deck_count();
-            let mixer_w = 76.0 * decks as f32 + 24.0;
+            let mixer_w = 118.0 * decks as f32 + 12.0;
             let deck_w = ((ui.available_width() - mixer_w) / 2.0).max(300.0);
             let left: Vec<usize> = (0..decks).filter(|d| d % 2 == 0).collect();
             let right: Vec<usize> = (0..decks).filter(|d| d % 2 == 1).collect();
