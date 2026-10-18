@@ -83,6 +83,8 @@ pub struct RedjApp {
     mixer_w: f32,
     /// Height of the mixer column in the last frame.
     mixer_h: f32,
+    /// Width of the mixer channel strips in the last frame.
+    channels_w: f32,
     /// Extra height given to the zoomed waveforms to match the mixer.
     wave_extra: f32,
     ai: ai::AiState,
@@ -138,6 +140,7 @@ impl RedjApp {
             demo: u8::from(opts.demo),
             mixer_w: 0.0,
             mixer_h: 0.0,
+            channels_w: 0.0,
             wave_extra: 0.0,
             ai: ai::AiState::default(),
         };
@@ -283,37 +286,8 @@ impl RedjApp {
                     30.0,
                     theme::RED,
                 );
-                match &loaded {
-                    Some(l) => {
-                        ui.vertical(|ui| {
-                            ui.label(
-                                RichText::new(
-                                    l.info
-                                        .tags
-                                        .title
-                                        .clone()
-                                        .unwrap_or_else(|| l.info.display_name()),
-                                )
-                                .strong()
-                                .size(15.0),
-                            );
-                            ui.label(
-                                RichText::new(l.info.tags.artist.clone().unwrap_or_default())
-                                    .color(Color32::from_gray(170)),
-                            );
-                        });
-                    }
-                    None if self.console.pending(d).is_some() => {
-                        ui.spinner();
-                        ui.label("loading…");
-                    }
-                    None => {
-                        ui.label(
-                            RichText::new("empty — load a track from the library")
-                                .color(Color32::from_gray(140)),
-                        );
-                    }
-                }
+                // Tempo, key and times first, from the right; title and
+                // artist get what is left and are truncated to fit.
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if let Some(l) = &loaded {
                         let sr = f64::from(l.audio.sample_rate);
@@ -336,6 +310,46 @@ impl RedjApp {
                         );
                         theme::glow_text(ui, &format!("{:.2}", st.bpm), 26.0, theme::NEON);
                     }
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        match &loaded {
+                            Some(l) => {
+                                ui.vertical(|ui| {
+                                    let title = l
+                                        .info
+                                        .tags
+                                        .title
+                                        .clone()
+                                        .unwrap_or_else(|| l.info.display_name());
+                                    ui.add(
+                                        egui::Label::new(RichText::new(title).strong().size(15.0))
+                                            .truncate(),
+                                    );
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(
+                                                l.info.tags.artist.clone().unwrap_or_default(),
+                                            )
+                                            .color(Color32::from_gray(170)),
+                                        )
+                                        .truncate(),
+                                    );
+                                });
+                            }
+                            None if self.console.pending(d).is_some() => {
+                                ui.spinner();
+                                ui.label("loading…");
+                            }
+                            None => {
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new("empty — load a track from the library")
+                                            .color(Color32::from_gray(140)),
+                                    )
+                                    .truncate(),
+                                );
+                            }
+                        }
+                    });
                 });
             });
             let ai_label = self
@@ -697,6 +711,32 @@ impl RedjApp {
 
     fn mixer(&mut self, ui: &mut Ui) {
         ui.vertical(|ui| {
+            // Master section across the top of the channel strips (their
+            // width as laid out last frame), knobs and phones meter centred.
+            let frame_extra = 2.0 * (8.0 + 2.0); // neon frame margin + stroke
+            theme::neon_frame().show(ui, |ui| {
+                let w = (self.channels_w - frame_extra).max(0.0);
+                ui.set_width(w);
+                ui.horizontal(|ui| {
+                    // Three knobs (44 wide) and the 12-wide meter.
+                    let row_w = 3.0 * 44.0 + 12.0 + 3.0 * ui.spacing().item_spacing.x;
+                    ui.add_space(((w - row_w) / 2.0).max(0.0));
+                    let mut knob_h = 0.0;
+                    for (k, label, default) in [
+                        (GlobalKnob::MasterLevel, "MASTER", 0.75),
+                        (GlobalKnob::CueMix, "CUE/MST", 0.0),
+                        (GlobalKnob::PhonesLevel, "PHONES", 0.75),
+                    ] {
+                        let mut v = self.console.global(k);
+                        let top = ui.cursor().top();
+                        if knob(ui, &mut v, default, label, 28.0) {
+                            self.console.set_global(k, v);
+                        }
+                        knob_h = ui.min_rect().bottom() - top;
+                    }
+                    vu(ui, "phones_vu", self.console.status().phones_peak, knob_h);
+                });
+            });
             let mut channels = egui::Rect::NOTHING;
             ui.horizontal_top(|ui| {
                 for d in 0..self.console.deck_count() {
@@ -706,31 +746,8 @@ impl RedjApp {
                         .rect;
                     channels = channels.union(r);
                 }
-                // Master section as a strip of its own, as tall as the
-                // channels, with the headphone meter beside its knobs.
-                theme::neon_frame().show(ui, |ui| {
-                    ui.set_min_height(channels.height() - 16.0);
-                    ui.vertical(|ui| {
-                        ui.label(RichText::new("MASTER").strong().color(ACCENT));
-                        ui.horizontal_top(|ui| {
-                            let knobs = ui.vertical(|ui| {
-                                for (k, label, default) in [
-                                    (GlobalKnob::MasterLevel, "MASTER", 0.75),
-                                    (GlobalKnob::CueMix, "CUE/MST", 0.0),
-                                    (GlobalKnob::PhonesLevel, "PHONES", 0.75),
-                                ] {
-                                    let mut v = self.console.global(k);
-                                    if knob(ui, &mut v, default, label, 28.0) {
-                                        self.console.set_global(k, v);
-                                    }
-                                }
-                            });
-                            let h = knobs.response.rect.height();
-                            vu(ui, "phones_vu", self.console.status().phones_peak, h);
-                        });
-                    });
-                });
             });
+            self.channels_w = channels.width();
             // Crossfader centred under the channel strips.
             let w = channels.width().max(120.0);
             ui.allocate_ui_with_layout(
