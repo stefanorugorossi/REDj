@@ -240,7 +240,12 @@ impl RedjApp {
             theme::logo(ui);
             ui.separator();
             let st = *self.console.status();
-            theme::glow_text(ui, &format!("{:.2} BPM", st.master_bpm), 24.0, theme::NEON);
+            theme::solid_text(
+                ui,
+                &format!("{:.2} BPM", st.master_bpm),
+                egui::FontId::new(24.0, theme::display()),
+                theme::NEON,
+            );
             ui.separator();
             let ai_on = self.console.ai_on;
             if toggle(ui, ai_on, "AI", AI, vec2(40.0, 22.0)).clicked() {
@@ -308,7 +313,12 @@ impl RedjApp {
                                 .monospace()
                                 .color(Color32::from_gray(170)),
                         );
-                        theme::glow_text(ui, &format!("{:.2}", st.bpm), 26.0, theme::NEON);
+                        theme::solid_text(
+                            ui,
+                            &format!("{:.2}", st.bpm),
+                            egui::FontId::new(26.0, theme::display()),
+                            theme::NEON,
+                        );
                     }
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                         match &loaded {

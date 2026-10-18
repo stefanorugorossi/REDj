@@ -3,8 +3,7 @@
 
 use egui::epaint::Shadow;
 use egui::{
-    Align2, Color32, CornerRadius, FontFamily, FontId, Frame, Margin, Stroke, TextStyle, Ui, Vec2,
-    vec2,
+    Align2, Color32, CornerRadius, FontFamily, FontId, Frame, Margin, Stroke, TextStyle, Ui, vec2,
 };
 
 /// Background red.
@@ -150,22 +149,9 @@ pub fn bar_frame() -> Frame {
         .inner_margin(Margin::symmetric(10, 6))
 }
 
-/// Draws `text` large and glowing in red, faux-bold. Returns its width.
-pub fn glow_text(ui: &mut Ui, text: &str, size: f32, color: Color32) -> f32 {
-    glow_text_font(ui, text, FontId::new(size, display()), color)
-}
-
-/// Like [`glow_text`] with an explicit font.
-pub fn glow_text_font(ui: &mut Ui, text: &str, font: FontId, color: Color32) -> f32 {
-    big_text(ui, text, font, color, true)
-}
-
-/// Large faux-bold text without the glow (logo, deck letters).
+/// Large faux-bold text in the display font (BPM, deck letters). Returns
+/// its width.
 pub fn solid_text(ui: &mut Ui, text: &str, font: FontId, color: Color32) -> f32 {
-    big_text(ui, text, font, color, false)
-}
-
-fn big_text(ui: &mut Ui, text: &str, font: FontId, color: Color32, glow: bool) -> f32 {
     let galley = ui
         .painter()
         .layout_no_wrap(text.to_owned(), font.clone(), color);
@@ -173,25 +159,6 @@ fn big_text(ui: &mut Ui, text: &str, font: FontId, color: Color32, glow: bool) -
     let (rect, _) = ui.allocate_exact_size(sz, egui::Sense::hover());
     let p = ui.painter();
     let pos = rect.left_center() + vec2(4.0, 0.0);
-    // Glow: concentric translucent copies.
-    let halo: &[(f32, u8)] = if glow {
-        &[(6.0, 25), (4.0, 45), (2.0, 80)]
-    } else {
-        &[]
-    };
-    for &(r, a) in halo {
-        for k in 0..8 {
-            let ang = k as f32 * std::f32::consts::FRAC_PI_4;
-            let o = Vec2::angled(ang) * r;
-            p.text(
-                pos + o,
-                Align2::LEFT_CENTER,
-                text,
-                font.clone(),
-                Color32::from_rgba_unmultiplied(color.r(), color.g() / 2, color.b() / 2, a),
-            );
-        }
-    }
     // Faux bold with a thin white rim on top.
     for dx in [0.0, 0.7, 1.4] {
         p.text(
