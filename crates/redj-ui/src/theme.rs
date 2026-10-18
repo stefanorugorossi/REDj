@@ -1,5 +1,5 @@
 //! Club look: red background, black neon-edged panels, high-contrast
-//! controls, and a glowing red REDj logo.
+//! controls, and a bold red REDj logo.
 
 use egui::epaint::Shadow;
 use egui::{
@@ -144,6 +144,15 @@ pub fn glow_text(ui: &mut Ui, text: &str, size: f32, color: Color32) -> f32 {
 
 /// Like [`glow_text`] with an explicit font.
 pub fn glow_text_font(ui: &mut Ui, text: &str, font: FontId, color: Color32) -> f32 {
+    big_text(ui, text, font, color, true)
+}
+
+/// Large faux-bold text without the glow (logo, deck letters).
+pub fn solid_text(ui: &mut Ui, text: &str, font: FontId, color: Color32) -> f32 {
+    big_text(ui, text, font, color, false)
+}
+
+fn big_text(ui: &mut Ui, text: &str, font: FontId, color: Color32, glow: bool) -> f32 {
     let galley = ui
         .painter()
         .layout_no_wrap(text.to_owned(), font.clone(), color);
@@ -152,7 +161,12 @@ pub fn glow_text_font(ui: &mut Ui, text: &str, font: FontId, color: Color32) -> 
     let p = ui.painter();
     let pos = rect.left_center() + vec2(4.0, 0.0);
     // Glow: concentric translucent copies.
-    for (r, a) in [(6.0f32, 25u8), (4.0, 45), (2.0, 80)] {
+    let halo: &[(f32, u8)] = if glow {
+        &[(6.0, 25), (4.0, 45), (2.0, 80)]
+    } else {
+        &[]
+    };
+    for &(r, a) in halo {
         for k in 0..8 {
             let ang = k as f32 * std::f32::consts::FRAC_PI_4;
             let o = Vec2::angled(ang) * r;
@@ -191,7 +205,7 @@ pub fn glow_text_font(ui: &mut Ui, text: &str, font: FontId, color: Color32) -> 
 pub fn logo(ui: &mut Ui) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = -6.0;
-        glow_text(ui, "RED", 34.0, RED);
-        glow_text_font(ui, "j", FontId::new(44.0, FontFamily::Proportional), RED);
+        solid_text(ui, "RED", FontId::new(34.0, display()), RED);
+        solid_text(ui, "j", FontId::new(44.0, FontFamily::Proportional), RED);
     });
 }

@@ -280,10 +280,10 @@ impl RedjApp {
         ui.vertical(|ui| {
             ui.set_max_width(ui.available_width());
             ui.horizontal(|ui| {
-                theme::glow_text(
+                theme::solid_text(
                     ui,
                     &format!("{}", (b'A' + d as u8) as char),
-                    30.0,
+                    egui::FontId::new(30.0, theme::display()),
                     theme::RED,
                 );
                 // Tempo, key and times first, from the right; title and
