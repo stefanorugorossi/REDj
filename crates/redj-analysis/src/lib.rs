@@ -24,7 +24,7 @@ pub use cache::Cache;
 pub use features::ANALYSIS_RATE;
 
 /// Bumped whenever analysis results change, invalidating cached records.
-pub const ANALYZER_VERSION: u32 = 2;
+pub const ANALYZER_VERSION: u32 = 4;
 
 /// File extensions picked up by [`scan_dir`].
 pub const AUDIO_EXTENSIONS: &[&str] = &["wav", "mp3", "flac", "aiff", "aif", "ogg", "m4a"];
@@ -108,8 +108,14 @@ fn beat_grid(
     };
     let kick_env = features::detrend(&feats.low_onset, (fps * 0.5) as usize);
     let bpm0 = tempo::resolve_octave(&kick_env, fps, bpm0, opts.min_bpm, opts.max_bpm);
-    let (bpm, phase_frames) = tempo::refine(env, fps, bpm0);
+    let (bpm, env_phase) = tempo::refine(env, fps, bpm0);
     let period = 60.0 * fps / bpm;
+    let (kick_sharp, kick_phase) = tempo::fold(&kick_env, period, 64);
+    let phase_frames = if kick_sharp >= 1.5 {
+        kick_phase
+    } else {
+        env_phase
+    };
     let to_sec = |frame: f64| {
         (frame * features::HOP as f64 + (features::N_FFT / 2) as f64) / f64::from(ANALYSIS_RATE)
     };
@@ -146,7 +152,8 @@ fn beat_grid(
         beats_t.push(t);
         t += beat_len;
     }
-    t0 = t0.rem_euclid(beat_len) + onset_offset(mono, &beats_t);
+    let off = onset_offset(mono, &beats_t);
+    t0 = t0.rem_euclid(beat_len) + off;
     // Re-anchor the beat list after the correction (first beat at >= 0).
     let first = t0.rem_euclid(beat_len);
     let beats_t: Vec<f64> = (0..)
@@ -159,7 +166,11 @@ fn beat_grid(
 
 /// Fine-aligns predicted beat times to kick transients in the time domain.
 /// Averages the low-passed envelope around every predicted beat and returns
-/// the offset (seconds) of the steepest rise.
+/// the offset (seconds) of the start of the rise.
+///
+/// The window reaches further back than forward: the onset envelope that
+/// placed the beats peaks after the attack, by up to ~50 ms on kicks with a
+/// soft attack.
 fn onset_offset(mono: &[f32], beats: &[f64]) -> f64 {
     let sr = f64::from(ANALYSIS_RATE);
     // Two cascaded one-pole low-passes at ~150 Hz, rectified, then a fast
@@ -176,39 +187,38 @@ fn onset_offset(mono: &[f32], beats: &[f64]) -> f64 {
             e as f32
         })
         .collect();
-    let half = (0.045 * sr) as i64;
-    let mut avg = vec![0f64; (2 * half + 1) as usize];
+    let before = (0.080 * sr) as i64;
+    let after = (0.040 * sr) as i64;
+    let mut avg = vec![0f64; (before + after + 1) as usize];
     let mut count = 0;
     for &t in beats {
         let c = (t * sr).round() as i64;
-        if c - half < 0 || c + half >= envelope.len() as i64 {
+        if c - before < 0 || c + after >= envelope.len() as i64 {
             continue;
         }
         for (k, v) in avg.iter_mut().enumerate() {
-            *v += f64::from(envelope[(c - half + k as i64) as usize]);
+            *v += f64::from(envelope[(c - before + k as i64) as usize]);
         }
         count += 1;
     }
     if count == 0 {
         return 0.0;
     }
-    let mut best = (0usize, f64::MIN);
-    for k in 1..avg.len() {
-        let d = avg[k] - avg[k - 1];
-        if d > best.1 {
-            best = (k, d);
-        }
-    }
-    if best.1 <= 0.0 {
+    // The valley before the kick (previous tail, sidechain dip), then the
+    // peak after it; the attack starts where the envelope last sits within
+    // 10% of that rise above the valley.
+    let argmax = |r: std::ops::Range<usize>, sign: f64| {
+        r.max_by(|&i, &j| (sign * avg[i]).total_cmp(&(sign * avg[j])))
+            .expect("non-empty window")
+    };
+    let lo = argmax(0..(before + (0.010 * sr) as i64) as usize, -1.0);
+    let hi = argmax(lo..avg.len(), 1.0);
+    let thr = avg[lo] + 0.1 * (avg[hi] - avg[lo]);
+    if avg[hi] - avg[lo] <= 0.0 {
         return 0.0;
     }
-    // Walk back from the steepest point to where the rise starts (10% of
-    // the steepest slope), which is where a DJ would put the grid line.
-    let mut k = best.0;
-    while k > 1 && avg[k] - avg[k - 1] > 0.1 * best.1 {
-        k -= 1;
-    }
-    (k as i64 - half) as f64 / sr
+    let k = (lo..=hi).rev().find(|&k| avg[k] <= thr).unwrap_or(lo);
+    (k as i64 - before) as f64 / sr
 }
 
 fn loudness(audio: &Audio) -> Loudness {

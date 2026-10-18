@@ -129,14 +129,33 @@ fn cache_round_trip_and_tags_fallback() {
 
 #[test]
 fn short_break_off_the_phrase_grid() {
-    // A 6-bar break starting mid-phrase, as in radio edits.
+    // A 6-bar build starting mid-phrase, as in radio edits.
     let mut spec = SynthSpec::club(130.0, Key::new(10, Mode::Major)).with_seed(5);
     spec.sections = vec![
         (SectionKind::Intro, 16),
         (SectionKind::Drop, 30),
-        (SectionKind::Breakdown, 6),
+        (SectionKind::Buildup, 6),
         (SectionKind::Drop, 28),
         (SectionKind::Outro, 16),
     ];
+    check(spec);
+}
+
+#[test]
+fn loud_open_hats_off_the_beat() {
+    // Italo-dance "boom-tss": the open hat out-weighs the kick in the
+    // full-band onset; the grid must still sit on the kick.
+    let mut spec = SynthSpec::club(133.0, Key::new(3, Mode::Minor)).with_seed(9);
+    spec.hat_gain = 1.2;
+    spec.hat_decay_sec = 0.15;
+    check(spec);
+}
+
+#[test]
+fn soft_kick_attack() {
+    // A kick that takes ~20 ms to rise: its onset-envelope peak lags the
+    // attack, the grid line belongs at the start of the rise.
+    let mut spec = SynthSpec::club(130.0, Key::new(10, Mode::Minor)).with_seed(13);
+    spec.kick_attack_sec = 0.008;
     check(spec);
 }

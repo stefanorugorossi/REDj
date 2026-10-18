@@ -74,9 +74,10 @@ pub fn bar_features(f: &Features, grid: &BeatGrid, duration_sec: f64) -> BarFeat
             }
         }
         bands.push(bm);
-        // Kick pulse at the strongest sub-beat phase: on real records the
-        // grid line (start of the attack) can sit tens of milliseconds
-        // before the flux peak, or drift across edits.
+        // Kick pulse at the strongest phase within a quarter beat of the
+        // grid line: the flux peak trails the attack by tens of
+        // milliseconds, and edits can shift the phase. The off-beat (hats,
+        // bass) stays out of reach.
         let hits = |p: usize| -> [f64; 4] {
             std::array::from_fn(|q| {
                 let beat = beat0 + q as f64 + p as f64 / PHASES as f64;
@@ -85,6 +86,7 @@ pub fn bar_features(f: &Features, grid: &BeatGrid, duration_sec: f64) -> BarFeat
         };
         let sums: Vec<f64> = (0..PHASES).map(|p| hits(p).iter().sum()).collect();
         let best = (0..PHASES)
+            .filter(|&p| p.min(PHASES - p) <= PHASES / 4)
             .max_by(|&a, &b| sums[a].total_cmp(&sums[b]))
             .unwrap_or(0);
         let mean = sums.iter().sum::<f64>() / PHASES as f64;
@@ -226,7 +228,7 @@ pub fn segment(bf: &BarFeatures) -> Vec<Section> {
     // energy. Their edges are kept exactly, even off the phrase grid
     // (radio edits splice arrangements at arbitrary bars), and even when
     // the break is shorter than a phrase.
-    let dip: Vec<bool> = (0..n).map(|b| !bf.kick[b] || bf.energy[b] < 0.6).collect();
+    let dip: Vec<bool> = (0..n).map(|b| !bf.kick[b] || bf.energy[b] < 0.4).collect();
     let mut bounds: Vec<usize> = Vec::new();
     let mut b = 0;
     while b < n {
@@ -277,25 +279,29 @@ pub fn segment(bf: &BarFeatures) -> Vec<Section> {
         .map(|s| s.0)
         .fold(0f32, f32::max);
     let high = |i: usize| stats[i].1 >= 0.5 && stats[i].0 >= e_drop - 0.15;
-    let first_high = (0..segs.len()).find(|&i| high(i));
-    let last_high = (0..segs.len()).rev().find(|&i| high(i));
     // Without the beat, or a clear step down from the drops even if a few
     // kicks remain (filtered breaks).
     let low = |i: usize| stats[i].1 < 0.5 || stats[i].0 < e_drop - 0.3;
+    // The intro ends at the first drop or break, the outro starts after the
+    // last one; a beatless first or last segment is still intro or outro.
+    let last = segs.len() - 1;
+    let event = |i: usize| high(i) || (low(i) && i > 0 && i < last);
+    let first_event = (0..segs.len()).find(|&i| event(i));
+    let last_event = (0..segs.len()).rev().find(|&i| event(i));
 
     let kinds: Vec<SectionKind> = (0..segs.len())
         .map(|i| {
             let (_, _, slope) = stats[i];
             if i > 0 && low(i) && i + 1 < segs.len() && high(i + 1) {
                 let len = segs[i].1 - segs[i].0;
-                if slope > 0.05 || len <= 4 {
+                if slope > 0.05 || len <= 8 {
                     return SectionKind::Buildup;
                 }
             }
-            if first_high.is_none_or(|f| i < f) && !high(i) {
+            if first_event.is_none_or(|f| i < f) && !high(i) {
                 return SectionKind::Intro;
             }
-            if last_high.is_none_or(|l| i > l) && !high(i) {
+            if last_event.is_none_or(|l| i > l) && !high(i) {
                 return SectionKind::Outro;
             }
             if high(i) {
@@ -304,7 +310,7 @@ pub fn segment(bf: &BarFeatures) -> Vec<Section> {
             if low(i) {
                 let next_is_drop = i + 1 < segs.len() && high(i + 1);
                 let len = segs[i].1 - segs[i].0;
-                if next_is_drop && (slope > 0.05 || len <= 4) {
+                if next_is_drop && (slope > 0.05 || len <= 8) {
                     return SectionKind::Buildup;
                 }
                 return SectionKind::Breakdown;

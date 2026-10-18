@@ -21,6 +21,13 @@ pub struct SynthSpec {
     /// Sections and their length in bars, in order.
     pub sections: Vec<(SectionKind, u32)>,
     pub seed: u64,
+    /// Rise time of the kick (seconds); real kicks range from a click to
+    /// tens of milliseconds.
+    pub kick_attack_sec: f64,
+    /// Gain and decay (seconds) of the off-beat hat; loud open hats can
+    /// out-weigh the kick in the full-band onset.
+    pub hat_gain: f64,
+    pub hat_decay_sec: f64,
 }
 
 impl SynthSpec {
@@ -43,6 +50,9 @@ impl SynthSpec {
                 (Outro, 16),
             ],
             seed: 1,
+            kick_attack_sec: 0.0005,
+            hat_gain: 0.12,
+            hat_decay_sec: 0.05,
         }
     }
 
@@ -228,7 +238,7 @@ pub fn render(spec: &SynthSpec) -> SynthTrack {
             for q in 0..4 {
                 let t = bar_t + f64::from(q) * beat;
                 if p.kick {
-                    kick(&mut l, &mut r, at(t), sr, 0.9);
+                    kick(&mut l, &mut r, at(t), sr, 0.9, spec.kick_attack_sec);
                 }
                 if p.clap && (q == 1 || q == 3) {
                     noise_hit(&mut l, &mut r, at(t), 0.18, 0.25, &mut rng, sr, 0.5);
@@ -238,8 +248,8 @@ pub fn render(spec: &SynthSpec) -> SynthTrack {
                         &mut l,
                         &mut r,
                         at(t + beat / 2.0),
-                        0.05,
-                        0.12,
+                        spec.hat_decay_sec,
+                        spec.hat_gain,
                         &mut rng,
                         sr,
                         0.95,
@@ -322,7 +332,7 @@ pub fn render(spec: &SynthSpec) -> SynthTrack {
     }
 }
 
-fn kick(l: &mut [f64], r: &mut [f64], start: usize, sr: f64, gain: f64) {
+fn kick(l: &mut [f64], r: &mut [f64], start: usize, sr: f64, gain: f64, attack: f64) {
     let n = (0.3 * sr) as usize;
     let mut phase = 0.0;
     for i in 0..n {
@@ -332,7 +342,7 @@ fn kick(l: &mut [f64], r: &mut [f64], start: usize, sr: f64, gain: f64) {
         let t = i as f64 / sr;
         let f = 48.0 + 110.0 * (-t * 30.0).exp();
         phase += TAU * f / sr;
-        let env = (-t * 9.0).exp() * (1.0 - (-t * 2000.0).exp());
+        let env = (-t * 9.0).exp() * (1.0 - (-t / attack).exp());
         let v = gain * env * phase.sin();
         l[idx] += v;
         r[idx] += v;
