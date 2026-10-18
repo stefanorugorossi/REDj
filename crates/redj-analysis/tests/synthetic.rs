@@ -126,3 +126,17 @@ fn cache_round_trip_and_tags_fallback() {
     assert!(second.path.ends_with("renamed.wav"));
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn short_break_off_the_phrase_grid() {
+    // A 6-bar break starting mid-phrase, as in radio edits.
+    let mut spec = SynthSpec::club(130.0, Key::new(10, Mode::Major)).with_seed(5);
+    spec.sections = vec![
+        (SectionKind::Intro, 16),
+        (SectionKind::Drop, 30),
+        (SectionKind::Breakdown, 6),
+        (SectionKind::Drop, 28),
+        (SectionKind::Outro, 16),
+    ];
+    check(spec);
+}

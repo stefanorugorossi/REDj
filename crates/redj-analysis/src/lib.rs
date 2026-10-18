@@ -24,7 +24,7 @@ pub use cache::Cache;
 pub use features::ANALYSIS_RATE;
 
 /// Bumped whenever analysis results change, invalidating cached records.
-pub const ANALYZER_VERSION: u32 = 1;
+pub const ANALYZER_VERSION: u32 = 2;
 
 /// File extensions picked up by [`scan_dir`].
 pub const AUDIO_EXTENSIONS: &[&str] = &["wav", "mp3", "flac", "aiff", "aif", "ogg", "m4a"];

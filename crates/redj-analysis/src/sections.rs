@@ -4,6 +4,11 @@ use redj_core::{BeatGrid, Section, SectionKind, bars_to_beats};
 
 use crate::features::{Features, N_BANDS};
 
+/// Sub-beat phases searched for the kick pulse.
+const PHASES: usize = 16;
+/// Shortest run of beatless or low-energy bars taken as a break.
+const MIN_BREAK_BARS: usize = 3;
+
 /// Per-bar measurements.
 #[derive(Debug, Clone)]
 pub struct BarFeatures {
@@ -40,6 +45,7 @@ pub fn bar_features(f: &Features, grid: &BeatGrid, duration_sec: f64) -> BarFeat
     let mut density = Vec::with_capacity(n_bars);
     let mut kick_on = Vec::with_capacity(n_bars);
     let mut kick_ratio = Vec::with_capacity(n_bars);
+    let mut kick_hits: Vec<[f64; 4]> = Vec::with_capacity(n_bars);
     let mut bands = Vec::with_capacity(n_bars);
     for b in 0..n_bars {
         let beat0 = bars_to_beats(b as f64);
@@ -49,6 +55,7 @@ pub fn bar_features(f: &Features, grid: &BeatGrid, duration_sec: f64) -> BarFeat
             density.push(0.0);
             kick_on.push(0.0);
             kick_ratio.push(0.0);
+            kick_hits.push([0.0; 4]);
             bands.push([-100.0f64; N_BANDS]);
             continue;
         }
@@ -67,20 +74,31 @@ pub fn bar_features(f: &Features, grid: &BeatGrid, duration_sec: f64) -> BarFeat
             }
         }
         bands.push(bm);
-        let mut on = 0.0;
-        let mut off = 0.0;
-        for q in 0..4 {
-            let beat = beat0 + q as f64;
-            on += peak_near(&f.low_onset, f, grid.beat_to_sec(beat));
-            off += peak_near(&f.low_onset, f, grid.beat_to_sec(beat + 0.5));
-        }
-        kick_on.push(on / 4.0);
-        kick_ratio.push(on / (off + 1e-6));
+        // Kick pulse at the strongest sub-beat phase: on real records the
+        // grid line (start of the attack) can sit tens of milliseconds
+        // before the flux peak, or drift across edits.
+        let hits = |p: usize| -> [f64; 4] {
+            std::array::from_fn(|q| {
+                let beat = beat0 + q as f64 + p as f64 / PHASES as f64;
+                peak_near(&f.low_onset, f, grid.beat_to_sec(beat))
+            })
+        };
+        let sums: Vec<f64> = (0..PHASES).map(|p| hits(p).iter().sum()).collect();
+        let best = (0..PHASES)
+            .max_by(|&a, &b| sums[a].total_cmp(&sums[b]))
+            .unwrap_or(0);
+        let mean = sums.iter().sum::<f64>() / PHASES as f64;
+        kick_on.push(sums[best] / 4.0);
+        kick_ratio.push(sums[best] / (mean + 1e-6));
+        kick_hits.push(hits(best));
     }
 
     let on_ref = percentile(&kick_on, 0.9);
     let kick: Vec<bool> = (0..n_bars)
-        .map(|b| kick_on[b] > 0.25 * on_ref && kick_ratio[b] > 1.5)
+        .map(|b| {
+            let steady = kick_hits[b].iter().filter(|&&h| h > 0.35 * on_ref).count() >= 3;
+            kick_on[b] > 0.4 * on_ref && kick_ratio[b] > 1.6 && steady
+        })
         .collect();
 
     let (l_lo, l_hi) = (percentile(&loud, 0.05), percentile(&loud, 0.95));
@@ -180,7 +198,15 @@ pub fn segment(bf: &BarFeatures) -> Vec<Section> {
     // Phrase offset: which bar (mod 8) the arrangement changes on.
     let off = (0..8)
         .max_by(|&a, &b| {
-            let s = |o: usize| (o..n).step_by(8).map(|i| nov[i]).sum::<f64>();
+            // Only local peaks (novelty smears over neighbouring bars), away
+            // from the edges: fades and leading silence are not phrases.
+            let s = |o: usize| {
+                (o..n.saturating_sub(4))
+                    .step_by(8)
+                    .filter(|&i| i >= 4 && nov[i] >= nov[i - 1] && nov[i] >= nov[i + 1])
+                    .map(|i| nov[i])
+                    .sum::<f64>()
+            };
             s(a).total_cmp(&s(b))
         })
         .unwrap_or(0);
@@ -196,12 +222,35 @@ pub fn segment(bf: &BarFeatures) -> Vec<Section> {
         })
         .collect();
     cands.sort_by(|&a, &b| nov[b].total_cmp(&nov[a]));
+    // Breaks: runs of bars without the beat or well below the track's
+    // energy. Their edges are kept exactly, even off the phrase grid
+    // (radio edits splice arrangements at arbitrary bars), and even when
+    // the break is shorter than a phrase.
+    let dip: Vec<bool> = (0..n).map(|b| !bf.kick[b] || bf.energy[b] < 0.6).collect();
     let mut bounds: Vec<usize> = Vec::new();
-    for c in cands {
-        if bounds.iter().all(|&b| c.abs_diff(b) >= 8) {
-            bounds.push(c);
+    let mut b = 0;
+    while b < n {
+        if !dip[b] {
+            b += 1;
+            continue;
+        }
+        let start = b;
+        while b < n && dip[b] {
+            b += 1;
+        }
+        if b - start >= MIN_BREAK_BARS {
+            bounds.extend([start, b].into_iter().filter(|&e| e > 0 && e < n));
         }
     }
+    let mut picked: Vec<usize> = Vec::new();
+    for c in cands {
+        if picked.iter().all(|&p| c.abs_diff(p) >= 8)
+            && bounds.iter().all(|&e| c.abs_diff(e) >= MIN_BREAK_BARS)
+        {
+            picked.push(c);
+        }
+    }
+    bounds.extend(picked);
     bounds.push(0);
     bounds.push(n);
     bounds.sort_unstable();
@@ -230,14 +279,16 @@ pub fn segment(bf: &BarFeatures) -> Vec<Section> {
     let high = |i: usize| stats[i].1 >= 0.5 && stats[i].0 >= e_drop - 0.15;
     let first_high = (0..segs.len()).find(|&i| high(i));
     let last_high = (0..segs.len()).rev().find(|&i| high(i));
+    // Without the beat, or a clear step down from the drops even if a few
+    // kicks remain (filtered breaks).
+    let low = |i: usize| stats[i].1 < 0.5 || stats[i].0 < e_drop - 0.3;
 
     let kinds: Vec<SectionKind> = (0..segs.len())
         .map(|i| {
-            let (e, k, slope) = stats[i];
-            let _ = e;
-            if i > 0 && k < 0.5 && i + 1 < segs.len() && high(i + 1) {
+            let (_, _, slope) = stats[i];
+            if i > 0 && low(i) && i + 1 < segs.len() && high(i + 1) {
                 let len = segs[i].1 - segs[i].0;
-                if slope > 0.05 || len <= 8 {
+                if slope > 0.05 || len <= 4 {
                     return SectionKind::Buildup;
                 }
             }
@@ -250,10 +301,10 @@ pub fn segment(bf: &BarFeatures) -> Vec<Section> {
             if high(i) {
                 return SectionKind::Drop;
             }
-            if k < 0.5 {
+            if low(i) {
                 let next_is_drop = i + 1 < segs.len() && high(i + 1);
                 let len = segs[i].1 - segs[i].0;
-                if next_is_drop && (slope > 0.05 || len <= 8) {
+                if next_is_drop && (slope > 0.05 || len <= 4) {
                     return SectionKind::Buildup;
                 }
                 return SectionKind::Breakdown;
@@ -288,5 +339,55 @@ fn mean(v: &[f32]) -> f32 {
         0.0
     } else {
         v.iter().sum::<f32>() / v.len() as f32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::features::{self, ANALYSIS_RATE};
+    use redj_core::{Key, Mode};
+    use redj_media::Audio;
+    use redj_testkit::{SynthSpec, render};
+
+    /// On real records the fitted grid line can sit well before the kick's
+    /// flux peak; the beat must still be found.
+    #[test]
+    fn kick_found_with_grid_ahead_of_the_kick() {
+        let t = render(&SynthSpec::club(128.0, Key::new(9, Mode::Minor)));
+        let mono = Audio {
+            sample_rate: t.sample_rate,
+            channels: 2,
+            samples: t.samples.clone(),
+        };
+        let mono = Audio {
+            sample_rate: t.sample_rate,
+            channels: 1,
+            samples: mono.to_mono(),
+        }
+        .resampled(ANALYSIS_RATE)
+        .unwrap()
+        .samples;
+        let f = features::compute(&mono);
+        let bpm = t.truth.bpm;
+        let shifted = BeatGrid::constant(bpm, t.truth.first_downbeat_sec + 60.0 / bpm - 0.09);
+        let bf = bar_features(&f, &shifted, mono.len() as f64 / f64::from(ANALYSIS_RATE));
+        let drop = t
+            .truth
+            .sections
+            .iter()
+            .find(|s| s.0 == SectionKind::Drop)
+            .unwrap();
+        let (a, b) = (drop.1 as usize + 1, drop.2 as usize - 1);
+        let hits = bf.kick[a..b].iter().filter(|&&k| k).count();
+        assert!(
+            hits >= (b - a) * 9 / 10,
+            "kick in {hits} of {} drop bars",
+            b - a
+        );
+        let kinds: Vec<SectionKind> = segment(&bf).iter().map(|s| s.kind).collect();
+        assert!(kinds.contains(&SectionKind::Drop), "{kinds:?}");
+        assert!(kinds.contains(&SectionKind::Breakdown), "{kinds:?}");
+        assert!(kinds.contains(&SectionKind::Buildup), "{kinds:?}");
     }
 }
