@@ -1,0 +1,15 @@
+[package]
+name = "redj-ai"
+description = "AI host: Ollama client, embedded MCP client, tool-calling loop, mock LLM."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+redj-core.workspace = true
+redj-mcp.workspace = true
+
+[lints]
+workspace = true

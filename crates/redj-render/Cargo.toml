@@ -1,0 +1,17 @@
+[package]
+name = "redj-render"
+description = "Offline, deterministic rendering of a mix plan to WAV/MP3 with cue sheet and tags."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+redj-core.workspace = true
+redj-engine.workspace = true
+redj-plan.workspace = true
+redj-analysis.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,33 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "apps/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+rust-version = "1.85"
+
+[workspace.dependencies]
+redj-core = { path = "crates/redj-core" }
+redj-dsp = { path = "crates/redj-dsp" }
+redj-plan = { path = "crates/redj-plan" }
+redj-analysis = { path = "crates/redj-analysis" }
+redj-engine = { path = "crates/redj-engine" }
+redj-render = { path = "crates/redj-render" }
+redj-control = { path = "crates/redj-control" }
+redj-mcp = { path = "crates/redj-mcp" }
+redj-ai = { path = "crates/redj-ai" }
+redj-midi = { path = "crates/redj-midi" }
+redj-ui = { path = "crates/redj-ui" }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.dev.package."*"]
+# Audio code is unusable unoptimized; keep dependencies fast in debug builds.
+opt-level = 2

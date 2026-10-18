@@ -1,0 +1,16 @@
+[package]
+name = "redj-control"
+description = "Session core: parameter ownership (human vs AI), pending plans, fallback autopilot."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+redj-core.workspace = true
+redj-engine.workspace = true
+redj-plan.workspace = true
+
+[lints]
+workspace = true

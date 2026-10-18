@@ -1,0 +1,14 @@
+[package]
+name = "redj-plan"
+description = "Mix plan data model, JSON Schema and validation with AI-readable errors."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+redj-core.workspace = true
+
+[lints]
+workspace = true

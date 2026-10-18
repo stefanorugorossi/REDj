@@ -1,0 +1,16 @@
+[package]
+name = "redj-mcp"
+description = "MCP server exposing the console to AI clients over stdio and Streamable HTTP."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+redj-core.workspace = true
+redj-plan.workspace = true
+redj-control.workspace = true
+
+[lints]
+workspace = true

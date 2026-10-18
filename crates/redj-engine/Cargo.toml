@@ -1,0 +1,16 @@
+[package]
+name = "redj-engine"
+description = "Block-based mix engine with sample-accurate scheduler and offline/real-time drivers."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+redj-core.workspace = true
+redj-dsp.workspace = true
+redj-plan.workspace = true
+
+[lints]
+workspace = true

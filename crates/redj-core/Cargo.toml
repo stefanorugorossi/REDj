@@ -1,0 +1,13 @@
+[package]
+name = "redj-core"
+description = "Shared units and types: beats, bars, sample positions, ids, track info."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+
+[lints]
+workspace = true
