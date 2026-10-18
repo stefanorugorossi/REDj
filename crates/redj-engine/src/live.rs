@@ -423,6 +423,9 @@ impl LiveEngine {
     pub fn new(cfg: LiveConfig) -> (LiveEngine, EngineHandle) {
         let (cmd_tx, cmd_rx) = rtrb::RingBuffer::new(1024);
         let st = Arc::new(std::sync::Mutex::new(Status::default()));
+        // On macOS the std mutex allocates its pthread mutex on first use;
+        // take that allocation here rather than in the audio callback.
+        drop(st.lock());
         let (gb_tx, gb_rx) = rtrb::RingBuffer::new(64);
         let sinc = Arc::new(SincTable::default());
         let n = cfg.decks.clamp(1, MAX_DECKS);
