@@ -3,6 +3,7 @@
 mod ai;
 mod backend;
 mod settings;
+mod theme;
 mod widgets;
 
 use std::path::PathBuf;
@@ -85,7 +86,7 @@ impl std::fmt::Debug for RedjApp {
 }
 
 fn style(ctx: &egui::Context) {
-    ctx.set_visuals(egui::Visuals::dark());
+    theme::apply(ctx);
 }
 
 impl RedjApp {
@@ -221,14 +222,10 @@ impl RedjApp {
 
     fn top_bar(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("REDj").size(20.0).strong().color(ACCENT));
+            theme::logo(ui);
             ui.separator();
             let st = *self.console.status();
-            ui.label(
-                RichText::new(format!("{:.2} BPM", st.master_bpm))
-                    .monospace()
-                    .size(16.0),
-            );
+            theme::glow_text(ui, &format!("{:.2} BPM", st.master_bpm), 24.0, theme::NEON);
             ui.separator();
             let ai_on = self.console.ai_on;
             if toggle(ui, ai_on, "AI", AI, vec2(40.0, 22.0)).clicked() {
@@ -268,11 +265,11 @@ impl RedjApp {
         ui.vertical(|ui| {
             ui.set_max_width(ui.available_width());
             ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(format!("{}", (b'A' + d as u8) as char))
-                        .size(22.0)
-                        .strong()
-                        .color(ACCENT),
+                theme::glow_text(
+                    ui,
+                    &format!("{}", (b'A' + d as u8) as char),
+                    30.0,
+                    theme::RED,
                 );
                 match &loaded {
                     Some(l) => {
@@ -325,12 +322,7 @@ impl RedjApp {
                                 .monospace()
                                 .color(Color32::from_gray(170)),
                         );
-                        ui.label(
-                            RichText::new(format!("{:.2}", st.bpm))
-                                .monospace()
-                                .size(18.0)
-                                .strong(),
-                        );
+                        theme::glow_text(ui, &format!("{:.2}", st.bpm), 26.0, theme::NEON);
                     }
                 });
             });
@@ -688,7 +680,7 @@ impl RedjApp {
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
                 for d in 0..self.console.deck_count() {
-                    ui.group(|ui| self.mixer_strip(ui, d));
+                    theme::neon_frame().show(ui, |ui| self.mixer_strip(ui, d));
                 }
             });
             ui.horizontal(|ui| {
@@ -1054,15 +1046,21 @@ impl eframe::App for RedjApp {
         for n in self.console.notices.drain(..) {
             self.status_line = n;
         }
-        egui::Panel::top("top").show(ui, |ui| self.top_bar(ui));
-        egui::Panel::bottom("status").show(ui, |ui| {
-            ui.label(RichText::new(&self.status_line).small());
-        });
+        egui::Panel::top("top")
+            .frame(theme::bar_frame().stroke(egui::Stroke::new(3.0, theme::RED)))
+            .show(ui, |ui| self.top_bar(ui));
+        egui::Panel::bottom("status")
+            .frame(theme::bar_frame())
+            .show(ui, |ui| {
+                ui.label(RichText::new(&self.status_line).small());
+            });
         egui::Panel::bottom("library")
+            .frame(theme::bar_frame().stroke(egui::Stroke::new(3.0, theme::RED)))
             .resizable(true)
             .default_size(220.0)
             .show(ui, |ui| {
                 egui::Panel::right("ai_panel")
+                    .frame(theme::bar_frame().stroke(egui::Stroke::new(2.0, widgets::AI)))
                     .default_size(420.0)
                     .resizable(true)
                     .show(ui, |ui| ai::panel(ui, &mut self.console));
@@ -1080,8 +1078,9 @@ impl eframe::App for RedjApp {
                 .show_separator_line(false)
                 .show(ui, |ui| {
                     for d in &left {
-                        ui.group(|ui| self.deck_panel(ui, *d));
+                        theme::neon_frame().show(ui, |ui| self.deck_panel(ui, *d));
                     }
+                    theme::watermark(ui);
                 });
             egui::Panel::right("decks_right")
                 .exact_size(deck_w)
@@ -1089,10 +1088,15 @@ impl eframe::App for RedjApp {
                 .show_separator_line(false)
                 .show(ui, |ui| {
                     for d in &right {
-                        ui.group(|ui| self.deck_panel(ui, *d));
+                        theme::neon_frame().show(ui, |ui| self.deck_panel(ui, *d));
                     }
+                    theme::watermark(ui);
                 });
-            self.mixer(ui);
+            let est = 124.0 * decks as f32;
+            ui.horizontal_top(|ui| {
+                ui.add_space(((ui.available_width() - est) / 2.0).max(0.0));
+                ui.vertical(|ui| self.mixer(ui));
+            });
         });
         if self.show_settings {
             self.settings_window(ui);
