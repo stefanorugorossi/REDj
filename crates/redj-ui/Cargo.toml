@@ -10,6 +10,17 @@ publish = false
 [dependencies]
 redj-core.workspace = true
 redj-control.workspace = true
+redj-engine = { workspace = true, features = ["rt"] }
+redj-midi.workspace = true
+redj-analysis.workspace = true
+redj-plan.workspace = true
+eframe.workspace = true
+egui.workspace = true
+rfd.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+directories.workspace = true
+tracing.workspace = true
 
 [lints]
 workspace = true

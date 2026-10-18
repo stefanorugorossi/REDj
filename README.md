@@ -21,6 +21,18 @@ Linux needs `pkg-config`, `libasound2-dev` and `libjack-jackd2-dev`.
 Windows needs the Visual Studio C++ Build Tools (also used to build LAME for
 MP3 output; disable with `--no-default-features` on `redj-render`).
 
+## GUI
+
+```sh
+redj path/to/music          # analyze the folder and open the console
+redj --demo demo/            # also load two tracks and start playing
+```
+
+Audio device, master and headphone channel pairs, MIDI controller and MIDI
+learn are in Settings. A DDJ-FLX4 is detected automatically (its profile is
+built from the published MIDI message list and has not been tested on
+hardware yet).
+
 ## Command line
 
 ```sh
@@ -34,6 +46,14 @@ redj-cli analyze demo/
 redj-cli schema > plan.schema.json
 redj-cli validate plan.json --music demo/
 redj-cli render plan.json --music demo/ --out mix.wav --mp3
+
+# Let the AI (Ollama) build and render a whole set; falls back to the
+# built-in planner without Ollama
+redj-cli models
+redj-cli set demo/ --out ai-mix.wav --minutes 30
+
+# MCP server for Claude Code / Claude Desktop
+redj-cli mcp --music demo/ --out-dir renders/
 ```
 
 A plan lists tracks by id (or a unique id prefix) with transitions placed in

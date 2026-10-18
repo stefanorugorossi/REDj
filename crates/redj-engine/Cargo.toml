@@ -7,14 +7,20 @@ license.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+# Real-time audio output through cpal.
+rt = ["dep:cpal"]
+
 [dependencies]
 redj-core.workspace = true
 redj-dsp.workspace = true
 redj-plan.workspace = true
 rtrb.workspace = true
+cpal = { workspace = true, optional = true }
 
 [dev-dependencies]
 redj-testkit.workspace = true
+assert_no_alloc.workspace = true
 
 [lints]
 workspace = true

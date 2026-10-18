@@ -332,7 +332,7 @@ impl Deck {
 #[derive(Debug)]
 pub struct EngineHandle {
     commands: rtrb::Producer<Command>,
-    status: rtrb::Consumer<Status>,
+    status: Arc<std::sync::Mutex<Status>>,
     garbage: rtrb::Consumer<Garbage>,
     last: Status,
 }
@@ -345,8 +345,8 @@ impl EngineHandle {
 
     /// Latest status (drains the queue) and drops returned garbage.
     pub fn status(&mut self) -> Status {
-        while let Ok(s) = self.status.pop() {
-            self.last = s;
+        if let Ok(s) = self.status.lock() {
+            self.last = *s;
         }
         while self.garbage.pop().is_ok() {}
         self.last
@@ -368,7 +368,9 @@ pub struct LiveEngine {
     decks: Vec<Deck>,
     master: Master,
     commands: rtrb::Consumer<Command>,
-    status_tx: rtrb::Producer<Status>,
+    /// Latest snapshot; written with `try_lock` so the audio thread never
+    /// waits for the UI.
+    status_tx: Arc<std::sync::Mutex<Status>>,
     garbage_tx: rtrb::Producer<Garbage>,
     master_deck: Option<usize>,
     master_bpm: f64,
@@ -385,7 +387,7 @@ pub struct LiveEngine {
 impl LiveEngine {
     pub fn new(cfg: LiveConfig) -> (LiveEngine, EngineHandle) {
         let (cmd_tx, cmd_rx) = rtrb::RingBuffer::new(1024);
-        let (st_tx, st_rx) = rtrb::RingBuffer::new(64);
+        let st = Arc::new(std::sync::Mutex::new(Status::default()));
         let (gb_tx, gb_rx) = rtrb::RingBuffer::new(64);
         let sinc = Arc::new(SincTable::default());
         let n = cfg.decks.clamp(1, MAX_DECKS);
@@ -404,7 +406,7 @@ impl LiveEngine {
             decks,
             master: Master::new(cfg.sample_rate, cfg.ceiling_db),
             commands: cmd_rx,
-            status_tx: st_tx,
+            status_tx: st.clone(),
             garbage_tx: gb_tx,
             master_deck: None,
             master_bpm: 120.0,
@@ -419,7 +421,7 @@ impl LiveEngine {
         };
         let handle = EngineHandle {
             commands: cmd_tx,
-            status: st_rx,
+            status: st,
             garbage: gb_rx,
             last: Status::default(),
         };
@@ -711,7 +713,13 @@ impl LiveEngine {
 
     /// Master tempo and beat: follow the master deck while it plays.
     fn update_clock(&mut self, frames: usize) {
-        if let Some(m) = self.master_deck
+        // Without an explicit master, the first playing deck leads the clock.
+        let leader = self.master_deck.or_else(|| {
+            self.decks
+                .iter()
+                .position(|d| d.playing && d.audio.is_some())
+        });
+        if let Some(m) = leader
             && let Some(d) = self.decks.get(m)
             && d.audio.is_some()
         {
@@ -855,9 +863,9 @@ impl LiveEngine {
     }
 
     fn publish(&mut self) {
-        if self.status_tx.slots() == 0 {
-            return; // UI not draining: keep the peaks for later
-        }
+        let Ok(mut slot) = self.status_tx.try_lock() else {
+            return; // the UI is reading: keep the peaks for the next block
+        };
         let mut st = Status {
             master_bpm: self.master_bpm,
             master_beat: self.master_beat,
@@ -902,6 +910,6 @@ impl LiveEngine {
                 loaded_fraction: d.audio.as_ref().map(|a| a.loaded_fraction()).unwrap_or(0.0),
             };
         }
-        let _ = self.status_tx.push(st);
+        *slot = st;
     }
 }

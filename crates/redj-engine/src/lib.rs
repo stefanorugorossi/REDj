@@ -9,6 +9,8 @@
 //! `process` on fixed-size blocks.
 
 mod audio;
+#[cfg(feature = "rt")]
+pub mod driver;
 mod live;
 mod master;
 mod player;

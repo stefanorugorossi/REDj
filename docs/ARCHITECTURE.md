@@ -94,14 +94,19 @@ clips with playhead maps and automation lanes, markers for the tracklist.
   device. A **real-time driver** (cpal) and an **offline driver** run the very
   same graph: this is what makes the offline render identical to live DSP.
 - Inside the audio callback: no allocation, no locks, no I/O.
-  - Commands arrive on lock-free SPSC queues (`rtrb`).
-  - New plans/timelines are handed over as prebuilt snapshots; replaced
+  - Commands arrive on a lock-free SPSC queue (`rtrb`).
+  - Status snapshots go out through a latest-value slot written with
+    `Mutex::try_lock`, which never waits: if the UI is reading, the audio
+    thread skips that update and keeps accumulating meter peaks.
+  - New tracks/plans are handed over as prebuilt `Arc` snapshots; replaced
     objects are sent back on a return queue and dropped off the audio thread.
-  - Debug builds wrap the callback in `assert_no_alloc`.
-- Tracks are decoded (symphonia) fully into memory by a background thread and
-  are playable while decoding progresses.
-- Buses have a **variable channel count** so stems and multichannel output
-  remain possible later.
+  - Tests run `process` under `assert_no_alloc` to prove it never allocates.
+- Track audio is stored in fixed-size chunks published through `OnceLock`,
+  so a deck can play while chunks are still arriving (unfilled chunks read
+  as silence). The current loader decodes and resamples a whole track
+  (about half a second in release builds) before publishing it.
+- Stereo throughout for now (decks, master, headphones); stems and
+  multichannel buses are a later extension.
 - Master and headphone (cue) outputs are routed to any channel pairs of one
   device (e.g. a 4-channel controller interface). Two separate devices need
   adaptive resampling for clock drift and are deferred.
@@ -189,9 +194,29 @@ accurate enough and avoids a heavy native runtime to maintain.
 ## UI
 
 egui/eframe. Immediate mode suits meters and scrolling waveforms that update
-every frame; waveforms use a custom wgpu paint callback. iced (Elm-style
-retained state) and Slint (weak free-form drawing) fit this workload less
-well. UI language: English only.
+every frame. Waveforms are three-band summaries (256-frame bins computed at
+load time) drawn with the egui painter, with the beat grid, cue, hot cues,
+loops and AI regions on top; this is fast enough, so the planned custom
+wgpu paint callback was not needed. iced (Elm-style retained state) and
+Slint (weak free-form drawing) fit this workload less well. UI language:
+English only. `redj --demo <music folder>` loads two tracks and plays one
+for a quick look.
+
+## MIDI controllers
+
+- Profiles are JSON data (`crates/redj-midi/profiles`): input bindings
+  (status, data1, optional LSB for 14-bit controls, inversion, absolute or
+  relative encoding) to abstract `Action`s, and output bindings from console
+  state to LEDs. The mapper only sees `MidiMessage`s, so a virtual controller
+  drives the same path in tests on every OS.
+- 14-bit controls emit a value on the LSB only (the hardware sends MSB then
+  LSB; emitting both would make the value jitter).
+- MIDI learn binds the next moved control to an action; learned bindings
+  override the profile.
+- LED feedback sends only changed values.
+- DDJ-FLX4: message numbers come from the Pioneer message list as encoded in
+  the Mixxx mapping (GPL-2.0-or-later); the profile is tested against the
+  virtual controller only, not against hardware.
 
 ## Licensing and dependencies
 
