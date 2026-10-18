@@ -12,5 +12,8 @@ redj-core.workspace = true
 redj-dsp.workspace = true
 redj-plan.workspace = true
 
+[dev-dependencies]
+redj-testkit.workspace = true
+
 [lints]
 workspace = true

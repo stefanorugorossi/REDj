@@ -7,11 +7,28 @@ license.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+default = ["mp3"]
+# MP3 output through LAME (builds the C library from source).
+mp3 = ["dep:mp3lame-encoder"]
+
 [dependencies]
 redj-core.workspace = true
 redj-engine.workspace = true
 redj-plan.workspace = true
+redj-media.workspace = true
+ebur128.workspace = true
+hound.workspace = true
+lofty.workspace = true
+rayon.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+mp3lame-encoder = { version = "0.2.5", optional = true }
+
+[dev-dependencies]
 redj-analysis.workspace = true
+redj-testkit.workspace = true
 
 [lints]
 workspace = true

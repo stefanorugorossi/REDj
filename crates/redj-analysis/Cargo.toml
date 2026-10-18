@@ -9,6 +9,20 @@ publish = false
 
 [dependencies]
 redj-core.workspace = true
+redj-media.workspace = true
+blake3.workspace = true
+directories.workspace = true
+ebur128.workspace = true
+lofty.workspace = true
+rayon.workspace = true
+realfft.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+redj-testkit.workspace = true
 
 [lints]
 workspace = true

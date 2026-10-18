@@ -1,0 +1,20 @@
+[package]
+name = "redj-media"
+description = "Audio file decoding (symphonia) and high-quality sample-rate conversion (rubato)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+symphonia.workspace = true
+rubato.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+redj-testkit.workspace = true
+redj-core.workspace = true
+
+[lints]
+workspace = true

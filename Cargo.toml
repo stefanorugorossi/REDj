@@ -20,6 +20,26 @@ redj-mcp = { path = "crates/redj-mcp" }
 redj-ai = { path = "crates/redj-ai" }
 redj-midi = { path = "crates/redj-midi" }
 redj-ui = { path = "crates/redj-ui" }
+redj-media = { path = "crates/redj-media" }
+redj-testkit = { path = "crates/redj-testkit" }
+
+anyhow = "1"
+blake3 = "1.8"
+clap = { version = "4.6", features = ["derive"] }
+directories = "6"
+ebur128 = "0.1.10"
+hound = "3.5"
+lofty = "0.25"
+rayon = "1.12"
+realfft = "3.5"
+rubato = "5"
+schemars = "1.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+symphonia = { version = "0.6", default-features = false, features = ["wav", "pcm", "mp3", "flac", "aac", "isomp4", "ogg", "vorbis", "aiff"] }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"
@@ -30,4 +50,14 @@ all = { level = "warn", priority = -1 }
 
 [profile.dev.package."*"]
 # Audio code is unusable unoptimized; keep dependencies fast in debug builds.
+opt-level = 2
+
+# DSP-heavy workspace crates are too slow to test unoptimized.
+[profile.dev.package.redj-analysis]
+opt-level = 2
+[profile.dev.package.redj-dsp]
+opt-level = 2
+[profile.dev.package.redj-engine]
+opt-level = 2
+[profile.dev.package.redj-testkit]
 opt-level = 2
