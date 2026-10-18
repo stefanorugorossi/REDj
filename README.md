@@ -26,12 +26,19 @@ MP3 output; disable with `--no-default-features` on `redj-render`).
 ```sh
 redj path/to/music          # analyze the folder and open the console
 redj --demo demo/            # also load two tracks and start playing
+redj --demo --ai demo/       # ...with the AI director on (needs Ollama)
 ```
 
 Audio device, master and headphone channel pairs, MIDI controller and MIDI
 learn are in Settings. A DDJ-FLX4 is detected automatically (its profile is
 built from the published MIDI message list and has not been tested on
 hardware yet).
+
+With the **AI** switch on, the AI director plans each next transition while
+the current track plays and the engine executes it on the beat. The panel
+next to the library shows the next transition, its rationale and a
+**Reject** button; moving any control of the two decks takes that control
+back from the AI. If the AI is late, the autopilot mixes on its own.
 
 ## Command line
 

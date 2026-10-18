@@ -11,6 +11,11 @@ use redj_midi::{
     Action, ControlEvent, DeckLeds, GlobalKnob, Knob, LedInputs, LedState, Mapper, MidiMessage,
 };
 
+#[path = "director.rs"]
+mod director;
+
+pub use director::{Director, DirectorSettings, Fallback, LogEntry, Scheduled};
+
 use crate::session::Session;
 use crate::waveform::Waveform;
 
@@ -88,6 +93,7 @@ pub struct Console {
     knob_pos: [[f32; 8]; MAX_DECKS],
     /// Normalized global control positions, indexed like [`GLOBALS`].
     global_pos: [f32; 4],
+    director: Director,
 }
 
 /// Order of [`Console::knob`] storage.
@@ -157,6 +163,7 @@ impl Console {
             notices: Vec::new(),
             knob_pos: [[1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.0]; MAX_DECKS],
             global_pos: [0.5, 0.0, 0.75, 0.75],
+            director: Director::default(),
         };
         c.refresh_browse();
         for d in 0..c.decks {
@@ -334,6 +341,7 @@ impl Console {
             self.midi(m);
         }
         self.status = self.engine.status();
+        self.direct();
         self.update_leds();
         &self.status
     }

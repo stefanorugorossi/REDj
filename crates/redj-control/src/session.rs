@@ -2,6 +2,8 @@
 //! clients and the UI.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Receiver;
 use std::sync::{Mutex, RwLock, RwLockReadGuard};
 
 use redj_core::{Library, TrackId};
@@ -10,6 +12,7 @@ use redj_render::{RenderOptions, RenderReport, render_plan, tracklist};
 use serde::Serialize;
 
 use crate::autoplan::{AutoPlanOptions, auto_plan};
+use crate::live::{LiveSnapshot, Proposal, ProposalReply, TransitionRequest};
 use crate::summary::{Compatibility, TrackDetail, TrackSummary};
 
 /// Result of checking or submitting a plan, shaped for a language model.
@@ -41,6 +44,11 @@ pub struct Session {
     accepted: Mutex<Option<MixPlan>>,
     output_dir: Option<PathBuf>,
     events: Mutex<Vec<SessionEvent>>,
+    live: Mutex<Option<LiveSnapshot>>,
+    proposals: Mutex<Vec<Proposal>>,
+    cancel_requested: AtomicBool,
+    /// True while the built-in AI director is waiting for the model.
+    ai_busy: AtomicBool,
 }
 
 impl Session {
@@ -214,5 +222,54 @@ impl Session {
 
     pub fn has_track(&self, id: &TrackId) -> bool {
         self.library().get(id).is_some()
+    }
+
+    /// Publishes the live state (called by the console every frame).
+    pub fn set_live(&self, s: Option<LiveSnapshot>) {
+        *self.live.lock().unwrap_or_else(|e| e.into_inner()) = s;
+    }
+
+    /// Current live state, `None` when no live console is running.
+    pub fn live(&self) -> Option<LiveSnapshot> {
+        self.live.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Queues a transition request for the console; the receiver gets the
+    /// validation result.
+    pub fn propose(&self, request: TransitionRequest, by: &str) -> Receiver<ProposalReply> {
+        let (p, rx) = Proposal::new(request, by);
+        if self.live().is_none() {
+            let _ = p
+                .reply
+                .send(ProposalReply::error("no live console is running"));
+        } else {
+            self.proposals
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(p);
+        }
+        rx
+    }
+
+    /// Requests waiting for the console.
+    pub fn take_proposals(&self) -> Vec<Proposal> {
+        std::mem::take(&mut *self.proposals.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    /// Asks the console to cancel the next transition.
+    pub fn request_cancel(&self) {
+        self.cancel_requested.store(true, Ordering::Relaxed);
+    }
+
+    pub fn take_cancel_request(&self) -> bool {
+        self.cancel_requested.swap(false, Ordering::Relaxed)
+    }
+
+    pub fn set_ai_busy(&self, busy: bool) {
+        self.ai_busy.store(busy, Ordering::Relaxed);
+    }
+
+    pub fn ai_busy(&self) -> bool {
+        self.ai_busy.load(Ordering::Relaxed)
     }
 }

@@ -14,6 +14,9 @@ struct Cli {
     /// Load two tracks and start playing (for a quick look).
     #[arg(long)]
     demo: bool,
+    /// Start with the AI director on (needs Ollama).
+    #[arg(long)]
+    ai: bool,
 }
 
 fn main() {
@@ -27,6 +30,7 @@ fn main() {
     if let Err(e) = redj_ui::run(redj_ui::UiOptions {
         music: cli.music,
         demo: cli.demo,
+        ai: cli.ai,
     }) {
         eprintln!("REDj failed to start: {e}");
         std::process::exit(1);

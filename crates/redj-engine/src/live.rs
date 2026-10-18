@@ -15,12 +15,17 @@ use crate::audio::TrackAudio;
 use crate::master::Master;
 use crate::reader::DeckReader;
 use crate::strip::{Strip, StripParams};
+use crate::transition::{
+    LiveTransition, TransitionState, TransitionStatus, param_bit, plan_params,
+};
 
 pub const MAX_DECKS: usize = 4;
 pub const HOT_CUES: usize = 8;
 /// Jog wheel resolution: ticks per revolution at 33 1/3 rpm.
 const JOG_TICKS_PER_REV: f64 = 720.0;
 const JOG_SEC_PER_REV: f64 = 1.8;
+/// Largest block processed in one pass (longer buffers are split).
+pub const MAX_BLOCK: usize = 512;
 
 /// Continuous deck controls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,12 +167,19 @@ pub enum Command {
     CueMix(f32),
     /// Headphone gain in dB.
     PhonesGain(f32),
+    /// Arms a plan-driven transition (replaces an armed one; refused while
+    /// another is active). The incoming track must already be loaded on
+    /// `in_deck`.
+    ArmTransition(Box<LiveTransition>),
+    /// Cancels the armed or active transition, leaving decks as they are.
+    CancelTransition,
 }
 
 /// Objects handed back to be dropped outside the audio thread.
 #[derive(Debug)]
 pub enum Garbage {
     Track(Arc<TrackAudio>),
+    Transition(Box<LiveTransition>),
 }
 
 /// Snapshot of one deck.
@@ -201,6 +213,13 @@ pub struct DeckStatus {
     /// Peak post-fader level since the previous snapshot.
     pub peak: f32,
     pub loaded_fraction: f32,
+    /// Channel strip values in effect (including AI automation).
+    pub volume: f32,
+    pub eq_db: [f32; 3],
+    pub filter: f32,
+    pub echo: f32,
+    /// Tempo fader position -1..1.
+    pub tempo: f32,
 }
 
 /// Snapshot of the engine.
@@ -215,6 +234,7 @@ pub struct Status {
     pub phones_peak: f32,
     /// Output frames processed so far.
     pub frames: u64,
+    pub transition: TransitionStatus,
 }
 
 #[derive(Debug)]
@@ -249,6 +269,8 @@ struct Deck {
     /// Phase correction from beat sync (rate offset).
     sync_correction: f64,
     peak: f32,
+    /// Strip parameters in effect at the end of the last block.
+    eff: StripParams,
 }
 
 impl Deck {
@@ -289,6 +311,7 @@ impl Deck {
             nudge: 0.0,
             sync_correction: 0.0,
             peak: 0.0,
+            eff: params,
         }
     }
 
@@ -382,6 +405,16 @@ pub struct LiveEngine {
     frames: u64,
     master_peak: f32,
     phones_peak: f32,
+    transition: Option<Box<LiveTransition>>,
+    tr_state: TransitionState,
+    /// Human-owned parameters (bits 0..8 outgoing deck, 8..16 incoming).
+    tr_human: u16,
+    tr_beat: f64,
+    tr_completed: u32,
+    tr_cancelled: u32,
+    tr_last_id: u32,
+    /// Master beat of the transition plan per frame of the block.
+    mbuf: Box<[f64]>,
 }
 
 impl LiveEngine {
@@ -418,6 +451,14 @@ impl LiveEngine {
             frames: 0,
             master_peak: 0.0,
             phones_peak: 0.0,
+            transition: None,
+            tr_state: TransitionState::Idle,
+            tr_human: 0,
+            tr_beat: 0.0,
+            tr_completed: 0,
+            tr_cancelled: 0,
+            tr_last_id: 0,
+            mbuf: vec![0.0; MAX_BLOCK].into_boxed_slice(),
         };
         let handle = EngineHandle {
             commands: cmd_tx,
@@ -436,8 +477,107 @@ impl LiveEngine {
         self.decks.get_mut(i)
     }
 
+    /// Deck whose transport a command touches.
+    fn transport_deck(c: &Command) -> Option<usize> {
+        match *c {
+            Command::Play { deck, .. }
+            | Command::TogglePlay { deck }
+            | Command::Cue { deck, .. }
+            | Command::Seek { deck, .. }
+            | Command::BeatJump { deck, .. }
+            | Command::HotCue { deck, .. }
+            | Command::BeatLoop { deck, .. }
+            | Command::LoopIn { deck }
+            | Command::LoopOut { deck }
+            | Command::Reloop { deck }
+            | Command::LoopScale { deck, .. }
+            | Command::Jog { deck, .. }
+            | Command::JogTouch { deck, on: true }
+            | Command::Sync { deck, .. }
+            | Command::Load { deck, .. }
+            | Command::Eject { deck } => Some(deck),
+            _ => None,
+        }
+    }
+
+    /// Human input during a transition: parameter moves take ownership of
+    /// that parameter; transport actions on the decks involved cancel the
+    /// transition (on the outgoing deck only once it is running, since the
+    /// plan follows the outgoing playhead anyway).
+    fn arbitrate(&mut self, c: &Command) {
+        let Some(t) = &self.transition else {
+            return;
+        };
+        let (o, i) = (t.out_deck, t.in_deck);
+        let active = self.tr_state == TransitionState::Active;
+        if let Command::Param { deck, param, .. } = *c
+            && (deck == o || deck == i)
+        {
+            let p = match param {
+                DeckParam::Volume => Some(redj_plan::Param::Volume),
+                DeckParam::EqLow => Some(redj_plan::Param::EqLow),
+                DeckParam::EqMid => Some(redj_plan::Param::EqMid),
+                DeckParam::EqHigh => Some(redj_plan::Param::EqHigh),
+                DeckParam::Filter => Some(redj_plan::Param::Filter),
+                DeckParam::Echo => Some(redj_plan::Param::Echo),
+                DeckParam::Trim | DeckParam::Tempo => None,
+            };
+            if let Some(p) = p {
+                self.tr_human |= param_bit(p) << if deck == o { 0 } else { 8 };
+            }
+            return;
+        }
+        if let Some(d) = Self::transport_deck(c) {
+            let load = matches!(c, Command::Load { .. } | Command::Eject { .. });
+            if d == i || (d == o && (active || load)) {
+                self.cancel_transition(true);
+            }
+        }
+    }
+
+    fn cancel_transition(&mut self, by_human: bool) {
+        if let Some(t) = self.transition.take() {
+            self.tr_last_id = t.id;
+            if by_human {
+                self.tr_cancelled += 1;
+            }
+            let _ = self.garbage_tx.push(Garbage::Transition(t));
+        }
+        self.tr_state = TransitionState::Idle;
+    }
+
+    fn arm_transition(&mut self, t: Box<LiveTransition>) {
+        if self.tr_state == TransitionState::Active
+            || t.out_deck >= self.decks.len()
+            || t.in_deck >= self.decks.len()
+            || t.out_deck == t.in_deck
+            || t.timeline.clips.len() < 2
+        {
+            let _ = self.garbage_tx.push(Garbage::Transition(t));
+            return;
+        }
+        self.cancel_transition(false);
+        let d = &mut self.decks[t.in_deck];
+        if let Some(a) = d.audio.clone() {
+            let start = t.start_beat();
+            let tb = t.timeline.clips[1]
+                .track_beat(start)
+                .unwrap_or(t.timeline.clips[1].playhead[0].track_start);
+            d.position = a.beat_to_frame(tb).max(0.0);
+            d.playing = false;
+            d.loop_active = false;
+            d.sync = false;
+        }
+        self.tr_human = 0;
+        self.tr_state = TransitionState::Armed;
+        self.transition = Some(t);
+    }
+
     fn apply(&mut self, c: Command) {
+        self.arbitrate(&c);
         match c {
+            Command::ArmTransition(t) => self.arm_transition(t),
+            Command::CancelTransition => self.cancel_transition(false),
             Command::Load {
                 deck,
                 audio,
@@ -750,9 +890,103 @@ impl LiveEngine {
         rate * src
     }
 
-    /// Renders one block: `master` and `phones` are interleaved stereo of
-    /// the same length (overwritten).
+    /// Renders audio: `master` and `phones` are interleaved stereo of the
+    /// same length (overwritten). Long buffers are processed in blocks of
+    /// at most [`MAX_BLOCK`] frames.
     pub fn process(&mut self, master: &mut [f32], phones: &mut [f32]) {
+        let frames = master.len().min(phones.len()) / 2;
+        let mut done = 0;
+        while done < frames {
+            let n = (frames - done).min(MAX_BLOCK);
+            self.process_block(
+                &mut master[done * 2..(done + n) * 2],
+                &mut phones[done * 2..(done + n) * 2],
+            );
+            done += n;
+        }
+        if frames == 0 {
+            self.process_block(&mut [], &mut []);
+        }
+    }
+
+    /// Fills `mbuf` with the transition plan's master beat for every frame
+    /// of the block and updates the transition state. Returns whether the
+    /// transition is running in this block.
+    fn transition_beats(&mut self, t: &LiveTransition, frames: usize) -> bool {
+        let rate = self.deck_rate(t.out_deck);
+        let d = &self.decks[t.out_deck];
+        let Some(a) = d.audio.as_ref() else {
+            return false;
+        };
+        let step = if d.playing { rate } else { 0.0 };
+        for k in 0..frames {
+            self.mbuf[k] = a.frame_to_beat(d.position + step * k as f64) - t.beat_offset;
+        }
+        let last = if frames > 0 {
+            self.mbuf[frames - 1]
+        } else {
+            a.frame_to_beat(d.position) - t.beat_offset
+        };
+        self.tr_beat = last;
+        if self.tr_state == TransitionState::Armed && last >= t.start_beat() {
+            self.tr_state = TransitionState::Active;
+            // The plan follows the outgoing playhead: a loop would rewind it.
+            self.decks[t.out_deck].loop_active = false;
+            let i = &mut self.decks[t.in_deck];
+            i.playing = true;
+            i.vari.reset();
+            i.lock.reset();
+        }
+        self.tr_state == TransitionState::Active
+    }
+
+    /// Hands the decks back to the human at the end of a transition.
+    fn finish_transition(&mut self, t: Box<LiveTransition>) {
+        let end = t.end_beat();
+        let bpm = self.master_bpm;
+        let sr = self.sr;
+        let (o, i) = (t.out_deck, t.in_deck);
+        {
+            let d = &mut self.decks[o];
+            d.playing = false;
+            d.params.volume = 0.0;
+            d.params.eq_db = [0.0; 3];
+            d.params.filter = 0.0;
+            d.params.echo_send = 0.0;
+        }
+        let owned_in = (self.tr_human >> 8) & 0xFF;
+        let final_params = plan_params(
+            &t.timeline,
+            1,
+            end,
+            &self.decks[i].params,
+            owned_in,
+            bpm,
+            sr,
+        );
+        let d = &mut self.decks[i];
+        d.params.volume = final_params.volume;
+        d.params.eq_db = final_params.eq_db;
+        d.params.filter = final_params.filter;
+        d.params.echo_send = final_params.echo_send;
+        // Keep the incoming deck at the current tempo with its own fader.
+        let ratio = bpm / d.track_bpm().max(1.0) - 1.0;
+        let range = [0.06f32, 0.10, 0.16, 0.50]
+            .into_iter()
+            .find(|r| f64::from(*r) >= ratio.abs())
+            .unwrap_or(1.0);
+        d.tempo_range = range;
+        d.tempo = (ratio / f64::from(range)) as f32;
+        if self.master_deck == Some(o) || self.master_deck.is_none() {
+            self.master_deck = Some(i);
+        }
+        self.tr_completed += 1;
+        self.tr_last_id = t.id;
+        self.tr_state = TransitionState::Idle;
+        let _ = self.garbage_tx.push(Garbage::Transition(t));
+    }
+
+    fn process_block(&mut self, master: &mut [f32], phones: &mut [f32]) {
         while let Ok(c) = self.commands.pop() {
             self.apply(c);
         }
@@ -779,10 +1013,57 @@ impl LiveEngine {
             d.nudge *= 0.9;
         }
 
+        let tr = self.transition.take();
+        let active = match &tr {
+            Some(t) => self.transition_beats(t, frames),
+            None => false,
+        };
+        if active
+            && let Some(t) = &tr
+            && !self.decks[t.out_deck].playing
+        {
+            // The human stopped the outgoing deck mid-transition.
+            self.transition = tr;
+            self.cancel_transition(true);
+            self.process_block_decks(master, phones, frames, None, false);
+            self.publish();
+            return;
+        }
+        self.process_block_decks(master, phones, frames, tr.as_deref(), active);
+        if let Some(t) = tr {
+            if active && self.tr_beat >= t.end_beat() {
+                self.finish_transition(t);
+            } else {
+                self.transition = Some(t);
+            }
+        }
+        self.publish();
+    }
+
+    fn process_block_decks(
+        &mut self,
+        master: &mut [f32],
+        phones: &mut [f32],
+        frames: usize,
+        tr: Option<&LiveTransition>,
+        active: bool,
+    ) {
         let (xl, xr) = crossfader_gains(self.crossfader, self.xf_curve);
+        let bpm = self.master_bpm;
+        let sr = self.sr;
         for i in 0..self.decks.len() {
             let rate = self.deck_rate(i);
             let fpt = JOG_SEC_PER_REV * self.sr / JOG_TICKS_PER_REV;
+            // Role in the running transition: clip index and ownership mask.
+            let role = tr.filter(|_| active).and_then(|t| {
+                if i == t.out_deck {
+                    Some((0usize, self.tr_human & 0xFF))
+                } else if i == t.in_deck {
+                    Some((1usize, (self.tr_human >> 8) & 0xFF))
+                } else {
+                    None
+                }
+            });
             let d = &mut self.decks[i];
             let Some(audio) = d.audio.clone() else {
                 continue;
@@ -799,8 +1080,22 @@ impl LiveEngine {
                 XfSide::Right => xr,
                 XfSide::Thru => 1.0,
             };
+            let locked = role.is_some_and(|r| r.0 == 1);
             for k in 0..frames {
-                let moving = d.playing || scratch;
+                let params = match (role, tr) {
+                    (Some((clip, owned)), Some(t)) => {
+                        plan_params(&t.timeline, clip, self.mbuf[k], &d.params, owned, bpm, sr)
+                    }
+                    _ => d.params,
+                };
+                let mut moving = d.playing || scratch;
+                if locked && let Some(t) = tr {
+                    // The incoming playhead follows the plan exactly.
+                    match t.timeline.clips[1].track_beat(self.mbuf[k]) {
+                        Some(tb) => d.position = audio.beat_to_frame(tb),
+                        None => moving = false,
+                    }
+                }
                 let (l, r) = if moving || d.cue_held {
                     // Scratching is always varispeed.
                     let use_lock = d.keylock && !scratch;
@@ -817,7 +1112,10 @@ impl LiveEngine {
                 } else {
                     (0.0, 0.0)
                 };
-                let o = d.strip.process(l, r, &d.params);
+                let o = d.strip.process(l, r, &params);
+                if k + 1 == frames {
+                    d.eff = params;
+                }
                 master[2 * k] += o.main[0] * xf;
                 master[2 * k + 1] += o.main[1] * xf;
                 if d.pfl {
@@ -825,7 +1123,9 @@ impl LiveEngine {
                     phones[2 * k + 1] += o.pfl[1];
                 }
                 d.peak = d.peak.max(o.main[0].abs()).max(o.main[1].abs());
-                if scratch {
+                if locked {
+                    // Position already set from the plan.
+                } else if scratch {
                     d.position += d.scratch_velocity;
                 } else if d.playing {
                     d.position += rate;
@@ -845,6 +1145,9 @@ impl LiveEngine {
                     d.position = 0.0;
                 }
             }
+            if frames == 0 {
+                d.eff = d.params;
+            }
         }
 
         // Headphones: cue bus blended with the pre-limiter master.
@@ -859,12 +1162,32 @@ impl LiveEngine {
             self.master_peak = self.master_peak.max(s.abs());
         }
         self.frames += frames as u64;
-        self.publish();
     }
 
     fn publish(&mut self) {
         let Ok(mut slot) = self.status_tx.try_lock() else {
             return; // the UI is reading: keep the peaks for the next block
+        };
+        let transition = match &self.transition {
+            Some(t) => TransitionStatus {
+                state: self.tr_state,
+                id: t.id,
+                out_deck: t.out_deck,
+                in_deck: t.in_deck,
+                beat: self.tr_beat,
+                start_beat: t.start_beat(),
+                end_beat: t.end_beat(),
+                human: self.tr_human,
+                completed: self.tr_completed,
+                cancelled: self.tr_cancelled,
+                last_id: self.tr_last_id,
+            },
+            None => TransitionStatus {
+                completed: self.tr_completed,
+                cancelled: self.tr_cancelled,
+                last_id: self.tr_last_id,
+                ..TransitionStatus::default()
+            },
         };
         let mut st = Status {
             master_bpm: self.master_bpm,
@@ -873,6 +1196,7 @@ impl LiveEngine {
             limiter_gain: self.master.take_meters().1,
             phones_peak: std::mem::take(&mut self.phones_peak),
             frames: self.frames,
+            transition,
             ..Status::default()
         };
         for (i, d) in self.decks.iter_mut().enumerate() {
@@ -908,6 +1232,11 @@ impl LiveEngine {
                 pfl: d.pfl,
                 peak: std::mem::take(&mut d.peak),
                 loaded_fraction: d.audio.as_ref().map(|a| a.loaded_fraction()).unwrap_or(0.0),
+                volume: d.eff.volume,
+                eq_db: d.eff.eq_db,
+                filter: d.eff.filter,
+                echo: d.eff.echo_send,
+                tempo: d.tempo,
             };
         }
         *slot = st;

@@ -26,6 +26,12 @@ pub struct Settings {
     pub ai_deadline_bars: f64,
     /// Bars of the near future the AI may not change.
     pub frozen_bars: f64,
+    /// When the AI is late, loop the outro instead of letting the
+    /// autopilot mix.
+    pub ai_loop_fallback: bool,
+    /// Serve MCP over HTTP so external AI clients can join the live set.
+    pub mcp_http: bool,
+    pub mcp_port: u16,
 }
 
 impl Default for Settings {
@@ -42,6 +48,9 @@ impl Default for Settings {
             ollama_url: "http://127.0.0.1:11434".into(),
             ai_deadline_bars: 16.0,
             frozen_bars: 4.0,
+            ai_loop_fallback: false,
+            mcp_http: false,
+            mcp_port: 8765,
         }
     }
 }

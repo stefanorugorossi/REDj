@@ -5,6 +5,7 @@
 //! server in-process, exactly like an external client would.
 
 mod agent;
+mod live;
 mod mock;
 mod model;
 mod ollama;
@@ -12,6 +13,7 @@ mod ollama;
 use std::sync::Arc;
 
 pub use agent::{Agent, AgentConfig, AgentEvent, AgentOutcome};
+pub use live::{LIVE_DJ_ROLE, LiveDirector, plan_next, spawn_live_director};
 pub use mock::MockModel;
 pub use model::*;
 pub use ollama::{DEFAULT_URL, ModelInfo, OllamaClient};

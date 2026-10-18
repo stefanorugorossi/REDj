@@ -11,4 +11,5 @@ pub use summary::{Compatibility, TrackDetail, TrackSummary};
 pub mod console;
 pub mod waveform;
 
-pub use console::{Console, LoadedTrack};
+pub use console::{Console, Director, DirectorSettings, Fallback, LoadedTrack};
+pub mod live;

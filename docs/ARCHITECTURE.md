@@ -115,39 +115,58 @@ clips with playhead maps and automation lanes, markers for the tracklist.
 
 ## Control arbitration (live)
 
-- Every automatable parameter has an **owner**: `Plan` or `Human`. Any UI or
-  MIDI action on a parameter takes ownership until the user hands it back.
-- AI actions **apply automatically**; the user can reject them explicitly from
-  the timeline. Rejected or overridden actions are logged with their reason.
-- A **frozen horizon** (configurable, in bars) protects the near future from
-  plan edits so changes never land mid-gesture.
-- The AI must deliver the next transition at least **N bars** before it starts
-  (N configurable). Otherwise the **autopilot** applies a safe default
-  (configurable: default blend at the outgoing track's outro, or loop the
-  current track).
+- The AI plans one transition at a time while the current track plays. A
+  scheduled transition is a compiled two-entry plan (playing track + next
+  track) whose master beat is the outgoing deck's own playhead, so the
+  outgoing deck keeps its tempo (`tempo: fixed` at the current BPM) and the
+  plan simply follows it; the incoming playhead is locked to the plan and
+  automation lanes drive both channel strips, sample by sample.
+- Ownership per parameter: during a transition every automatable parameter
+  of the two decks is owned by the plan until the human moves it; from then
+  on that parameter follows the human for the rest of the transition.
+  Transport actions (play, seek, jog, loops, sync, load) on the incoming
+  deck, or on the outgoing deck once the transition runs, cancel it: the
+  human has taken over. At the end the engine hands back: the outgoing deck
+  stops with its fader down, the incoming deck keeps the final automation
+  values and the current tempo on its own fader.
+- AI actions **apply automatically**; the UI shows the next transition with
+  its rationale and a **Reject** button. Rejections, overrides and
+  completions are logged.
+- A **frozen horizon** (default 4 bars) rejects transitions scheduled to
+  start too soon, so changes never land mid-gesture.
+- The AI must schedule the next transition a **deadline** (default 16 bars)
+  before the playing track's outro. Otherwise the **autopilot** steps in:
+  either a blend into the most compatible unplayed track at the outro
+  (default) or a 32-beat loop of the outro while waiting.
 - **AI off** is a first-class mode: the console works as a plain DJ console.
-- Every AI action carries a short textual rationale, shown in the UI.
 
 ## AI integration
 
 - `redj-mcp` is the single AI-facing interface. `redj-ai` talks to it
   in-process through the MCP client, so Ollama and external clients (Claude
   Code/Desktop) see exactly the same tools.
-- Streamable HTTP attaches external clients to the **running GUI** (live);
-  stdio starts a **headless** instance (offline sets).
-- Tools: read (library, track analysis, deck state, position, active plan)
-  and act (load track, propose/update plan, schedule transition, cancel
-  action). Parameters are typed with explicit units and ranges.
+- Transports: stdio (`redj-cli mcp`, headless, offline sets) and Streamable
+  HTTP on `127.0.0.1:<port>/mcp` from the GUI (Settings), which lets an
+  external client join the live set.
+- Offline tools: `list_tracks`, `get_track`, `compatibility`,
+  `suggest_plan`, `validate_plan`, `submit_plan`, `get_plan`, `plan_schema`,
+  `render_mix`. Live tools: `get_live_state` (decks, bars, tempo, played
+  tracks, next transition, earliest bar, deadline, suggested start and
+  length), `schedule_transition`, `cancel_transition`.
+- Live requests are validated by the console on the UI thread; the MCP tool
+  waits for the answer, so the model gets errors with concrete fixes.
 - Ollama: `/api/tags` lists models, `/api/show` `capabilities` tells which
-  support `tools` and `thinking`; `think` is toggled per request (off for
-  routine calls, on for whole-set planning).
+  support `tools` and `thinking`; `think` is sent explicitly (off by default:
+  recent models think by default, which is slow on CPU).
 - Slow-model hygiene: a stable system prompt and tool list at the head of
-  every request (KV-cache reuse), compact JSON summaries, explicit `num_ctx`
-  (Ollama's default context is only 4096 tokens), `keep_alive` to avoid
-  reloads, configurable timeouts and retries.
-- Default model: `qwen3.6:35b-a3b-q4_K_M`. Measured on the development
-  machine (Core Ultra 7 265H, 32 GB, CPU only): ~35 s cold load, ~11 tokens/s
-  generation.
+  every request (KV-cache reuse), only the tools a task needs, compact JSON
+  summaries with derived facts (mix-in/out ranges, suggested transition),
+  explicit `num_ctx` (Ollama's default is 4096 tokens), `keep_alive`,
+  configurable timeouts and retries.
+- Default model: `qwen3.6:35b-a3b-q4_K_M`. On the development machine (Core
+  Ultra 7 265H, 32 GB, CPU only): an offline five-track set took five tool
+  calls and about 3.5 minutes including a 103 s cold first turn; a live
+  transition is planned in 25-70 s, far ahead of the deadline.
 
 ## Analysis
 

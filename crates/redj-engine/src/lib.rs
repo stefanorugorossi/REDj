@@ -16,16 +16,18 @@ mod master;
 mod player;
 mod reader;
 mod strip;
+mod transition;
 
 pub use audio::TrackAudio;
 pub use live::{
     Command, DeckParam, DeckStatus, EngineHandle, Garbage, HOT_CUES, LiveConfig, LiveEngine,
-    MAX_DECKS, Status, XfSide,
+    MAX_BLOCK, MAX_DECKS, Status, XfSide,
 };
 pub use master::Master;
 pub use player::PlanPlayer;
 pub use reader::DeckReader;
 pub use strip::{Strip, StripParams};
+pub use transition::{LiveTransition, TransitionState, TransitionStatus};
 
 /// Engine configuration.
 #[derive(Debug, Clone, Copy)]

@@ -1,5 +1,6 @@
 //! Native egui user interface.
 
+mod ai;
 mod backend;
 mod settings;
 mod widgets;
@@ -26,6 +27,8 @@ pub struct UiOptions {
     pub music: Vec<PathBuf>,
     /// Load the first two library tracks on decks A and B and play A.
     pub demo: bool,
+    /// Start with the AI director on.
+    pub ai: bool,
 }
 
 /// Runs the GUI until the window closes.
@@ -64,6 +67,7 @@ pub struct RedjApp {
     learn_target: Option<redj_midi::Action>,
     /// Pending `--demo` steps.
     demo: u8,
+    ai: ai::AiState,
 }
 
 impl std::fmt::Debug for RedjApp {
@@ -111,7 +115,21 @@ impl RedjApp {
             status_line: err.map(|e| format!("audio: {e}")).unwrap_or_default(),
             learn_target: None,
             demo: u8::from(opts.demo),
+            ai: ai::AiState::default(),
         };
+        app.ai.refresh_models(&app.settings.ollama_url);
+        app.console.ai_on = opts.ai;
+        if app.settings.mcp_http {
+            match redj_mcp::serve_http(app.console.session().clone(), app.settings.mcp_port) {
+                Ok(_) => {
+                    app.status_line = format!(
+                        "MCP server on http://127.0.0.1:{}/mcp",
+                        app.settings.mcp_port
+                    )
+                }
+                Err(e) => app.status_line = format!("MCP server: {e}"),
+            }
+        }
         app.connect_midi();
         app.analyze_library();
         app
@@ -305,12 +323,34 @@ impl RedjApp {
                     }
                 });
             });
+            let ai_label = self
+                .console
+                .director()
+                .scheduled()
+                .map(|s| format!("AI {:?}", s.style));
+            let ai_region = self
+                .console
+                .director()
+                .scheduled()
+                .zip(loaded.as_ref())
+                .and_then(|(s, l)| {
+                    let f = |bar: f64| l.audio.beat_to_frame(bar * 4.0);
+                    if d == s.out_deck {
+                        Some((f(s.at_bar), f(s.at_bar + s.length_bars)))
+                    } else if d == s.in_deck && l.info.id == s.track {
+                        Some((f(s.in_start_bar), f(s.in_start_bar + s.length_bars)))
+                    } else {
+                        None
+                    }
+                });
             let marks = Marks {
                 cue: st.loaded.then_some(st.cue),
                 hot_cues: &st.hot_cues,
                 loop_range: st.loop_range,
                 loop_active: st.loop_active,
-                ai_region: None,
+                ai_region: ai_region
+                    .zip(ai_label.as_deref())
+                    .map(|((a, b), t)| (a, b, t)),
             };
             let resp = zoomed_waveform(
                 ui,
@@ -340,7 +380,16 @@ impl RedjApp {
             } else {
                 0.0
             };
-            if let Some(f) = overview(ui, loaded.as_ref().map(|l| &*l.waveform), frac, 34.0, None) {
+            let ai_frac = ai_region
+                .filter(|_| st.frames > 0)
+                .map(|(a, b)| (a / st.frames as f64, b / st.frames as f64));
+            if let Some(f) = overview(
+                ui,
+                loaded.as_ref().map(|l| &*l.waveform),
+                frac,
+                34.0,
+                ai_frac,
+            ) {
                 self.console.send(Command::Seek {
                     deck: d,
                     frame: f * st.frames as f64,
@@ -846,6 +895,68 @@ impl RedjApp {
                     }
                 }
                 ui.separator();
+                ui.heading("AI");
+                let models = self
+                    .ai
+                    .models
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                egui::ComboBox::from_label("Model")
+                    .selected_text(self.settings.ai_model.clone())
+                    .show_ui(ui, |ui| {
+                        for m in &models {
+                            let tools = m.supports_tools();
+                            let label = format!(
+                                "{} ({:.1} GB{})",
+                                m.name,
+                                m.size_bytes as f64 / 1e9,
+                                if tools { "" } else { ", no tools" }
+                            );
+                            if ui
+                                .add_enabled(
+                                    tools,
+                                    egui::Button::selectable(
+                                        self.settings.ai_model == m.name,
+                                        label,
+                                    ),
+                                )
+                                .clicked()
+                            {
+                                self.settings.ai_model = m.name.clone();
+                            }
+                        }
+                    });
+                if models.is_empty() {
+                    ui.label(RichText::new("no models found: is Ollama running?").color(ACCENT));
+                }
+                ui.horizontal(|ui| {
+                    ui.label("Ollama URL");
+                    ui.text_edit_singleline(&mut self.settings.ollama_url);
+                    if ui.button("Refresh").clicked() {
+                        self.ai.refresh_models(&self.settings.ollama_url);
+                    }
+                });
+                ui.add(
+                    egui::Slider::new(&mut self.settings.ai_deadline_bars, 8.0..=64.0)
+                        .text("plan deadline (bars before the outro)"),
+                );
+                ui.add(
+                    egui::Slider::new(&mut self.settings.frozen_bars, 1.0..=16.0)
+                        .text("frozen horizon (bars)"),
+                );
+                ui.checkbox(
+                    &mut self.settings.ai_loop_fallback,
+                    "if the AI is late, loop the outro instead of mixing automatically",
+                );
+                ui.checkbox(
+                    &mut self.settings.mcp_http,
+                    format!(
+                        "serve MCP on http://127.0.0.1:{}/mcp for external AI clients (restart)",
+                        self.settings.mcp_port
+                    ),
+                );
+                ui.separator();
                 ui.heading("Display");
                 ui.add(
                     egui::Slider::new(&mut self.settings.zoom_sec, 2.0..=30.0)
@@ -899,6 +1010,7 @@ impl eframe::App for RedjApp {
             };
         }
         self.console.poll();
+        self.ai.sync(&mut self.console, &self.settings);
         self.run_demo();
         for n in self.console.notices.drain(..) {
             self.status_line = n;
@@ -910,7 +1022,13 @@ impl eframe::App for RedjApp {
         egui::Panel::bottom("library")
             .resizable(true)
             .default_size(220.0)
-            .show(ui, |ui| self.library(ui));
+            .show(ui, |ui| {
+                egui::Panel::right("ai_panel")
+                    .default_size(420.0)
+                    .resizable(true)
+                    .show(ui, |ui| ai::panel(ui, &mut self.console));
+                self.library(ui);
+            });
         egui::CentralPanel::default().show(ui, |ui| {
             let decks = self.console.deck_count();
             let mixer_w = 76.0 * decks as f32 + 24.0;

@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+use redj_control::live::TransitionRequest;
 use redj_control::{AutoPlanOptions, Session};
 use redj_core::TrackId;
 use redj_plan::{MixPlan, plan_schema};
@@ -37,7 +38,13 @@ starts at its start_bar (usually its mix_in start, 0). Styles: bass_swap \
 (default choice), eq_swap, blend, filter (hides key clashes), echo_out \
 (for tempo changes over 6%: use length_bars 1 and tempo \"incoming\"), cut. \
 Prefer tempo changes under 6% and Camelot key distance 0-1. Add a short \
-rationale to each transition.";
+rationale to each transition.
+
+LIVE mode (a console is playing): call get_live_state, pick the next track \
+(never one listed in `played`) and call schedule_transition with at_bar, a \
+bar of the PLAYING track, >= earliest_at_bar, before deadline_bar is reached. \
+suggested_at_bar and suggested_length_bars (the playing track's outro) are \
+the safe default.";
 
 /// Accepts the plan as a JSON object or as a string containing JSON (some
 /// models send the latter).
@@ -119,6 +126,8 @@ fn tool_error(msg: impl Into<String>) -> Result<CallToolResult, McpError> {
 #[derive(Debug, Clone)]
 pub struct RedjServer {
     session: Arc<Session>,
+    /// Who is calling: "ai" for the built-in director, "external" otherwise.
+    label: &'static str,
     tool_router: ToolRouter<Self>,
 }
 
@@ -127,8 +136,15 @@ impl RedjServer {
     pub fn new(session: Arc<Session>) -> Self {
         Self {
             session,
+            label: "external",
             tool_router: Self::tool_router(),
         }
+    }
+
+    /// Marks requests as coming from the built-in AI director.
+    pub fn for_builtin_ai(mut self) -> Self {
+        self.label = "ai";
+        self
     }
 
     pub fn session(&self) -> &Arc<Session> {
@@ -234,6 +250,40 @@ impl RedjServer {
     }
 
     #[tool(
+        description = "Live console state: decks with the playing track, current bar, tempo, end and outro bars; tracks already played; the next scheduled transition; the earliest bar a transition may start (frozen horizon) and the deadline after which the autopilot mixes on its own."
+    )]
+    async fn get_live_state(&self) -> Result<CallToolResult, McpError> {
+        match self.session.live() {
+            Some(s) => json(&s),
+            None => tool_error("no live console is running (offline session)"),
+        }
+    }
+
+    #[tool(
+        description = "Schedule the next transition from the playing track into another track. Positions are bars of the PLAYING track. Replaces a scheduled transition that has not started yet. Returns ok, or errors with fixes."
+    )]
+    async fn schedule_transition(
+        &self,
+        Parameters(req): Parameters<TransitionRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let rx = self.session.propose(req, self.label);
+        let reply =
+            tokio::task::spawn_blocking(move || rx.recv_timeout(std::time::Duration::from_secs(5)))
+                .await
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        match reply {
+            Ok(r) => json(&r),
+            Err(_) => tool_error("the console did not answer; is the live console running?"),
+        }
+    }
+
+    #[tool(description = "Cancel the next scheduled (or running) transition.")]
+    async fn cancel_transition(&self) -> Result<CallToolResult, McpError> {
+        self.session.request_cancel();
+        json(&serde_json::json!({ "ok": true }))
+    }
+
+    #[tool(
         description = "Render the accepted plan to a WAV file (and optionally MP3) in the session's output folder."
     )]
     async fn render_mix(
@@ -282,7 +332,11 @@ pub async fn serve_stdio(
 pub fn serve_in_process(session: Arc<Session>) -> tokio::io::DuplexStream {
     let (server_io, client_io) = tokio::io::duplex(1 << 20);
     tokio::spawn(async move {
-        match RedjServer::new(session).serve(server_io).await {
+        match RedjServer::new(session)
+            .for_builtin_ai()
+            .serve(server_io)
+            .await
+        {
             Ok(s) => {
                 let _ = s.waiting().await;
             }
@@ -295,4 +349,46 @@ pub fn serve_in_process(session: Arc<Session>) -> tokio::io::DuplexStream {
 /// Whether a track id exists (helper for hosts).
 pub fn has_track(session: &Session, id: &str) -> bool {
     session.has_track(&TrackId(id.to_owned()))
+}
+
+/// Serves the session over MCP Streamable HTTP at
+/// `http://127.0.0.1:<port>/mcp` on a background thread, so external AI
+/// clients can join a running console. Loopback only.
+pub fn serve_http(
+    session: Arc<Session>,
+    port: u16,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
+    use rmcp::transport::streamable_http_server::{
+        StreamableHttpServerConfig, StreamableHttpService,
+    };
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    // Bind synchronously so errors (port in use) reach the caller.
+    let std_listener = std::net::TcpListener::bind(("127.0.0.1", port))?;
+    std_listener.set_nonblocking(true)?;
+    std::thread::Builder::new()
+        .name("redj-mcp-http".into())
+        .spawn(move || {
+            rt.block_on(async move {
+                let listener = match tokio::net::TcpListener::from_std(std_listener) {
+                    Ok(l) => l,
+                    Err(e) => {
+                        tracing::error!("MCP HTTP server: {e}");
+                        return;
+                    }
+                };
+                let service: StreamableHttpService<RedjServer, LocalSessionManager> =
+                    StreamableHttpService::new(
+                        move || Ok(RedjServer::new(session.clone())),
+                        Default::default(),
+                        StreamableHttpServerConfig::default(),
+                    );
+                let router = axum::Router::new().nest_service("/mcp", service);
+                if let Err(e) = axum::serve(listener, router).await {
+                    tracing::error!("MCP HTTP server stopped: {e}");
+                }
+            });
+        })
 }

@@ -14,6 +14,9 @@ redj-engine = { workspace = true, features = ["rt"] }
 redj-midi.workspace = true
 redj-analysis.workspace = true
 redj-plan.workspace = true
+redj-ai.workspace = true
+redj-mcp.workspace = true
+tokio.workspace = true
 eframe.workspace = true
 egui.workspace = true
 rfd.workspace = true
