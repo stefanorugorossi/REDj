@@ -21,11 +21,24 @@ pub fn display() -> FontFamily {
     FontFamily::Name("display".into())
 }
 
-/// Installs the fonts: Russo One for the interface, Bungee for display text
-/// (both SIL Open Font License, see `assets/fonts`).
+/// Logo font family (Monoton) for the "RED" of the logo.
+pub fn logo_font() -> FontFamily {
+    FontFamily::Name("logo".into())
+}
+
+/// Installs the fonts: Russo One for the interface, Bungee for display text,
+/// Monoton for the logo (all SIL Open Font License, see `assets/fonts`).
 fn fonts(ctx: &egui::Context) {
     use std::sync::Arc;
     let mut f = egui::FontDefinitions::default();
+    f.font_data.insert(
+        "monoton".into(),
+        Arc::new(egui::FontData::from_static(include_bytes!(
+            "../assets/fonts/Monoton-Regular.ttf"
+        ))),
+    );
+    f.families
+        .insert(logo_font(), vec!["monoton".to_owned(), "russo".to_owned()]);
     f.font_data.insert(
         "russo".into(),
         Arc::new(egui::FontData::from_static(include_bytes!(
@@ -199,13 +212,12 @@ fn big_text(ui: &mut Ui, text: &str, font: FontId, color: Color32, glow: bool) -
     sz.x
 }
 
-/// The REDj logo.
-/// The display font has capitals only; the brand's lowercase "j" is set
-/// in the interface font, slightly larger.
+/// The REDj logo, all in Monoton. Drawn in a single pass: faux bold would
+/// smudge its inline stripes.
 pub fn logo(ui: &mut Ui) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = -6.0;
-        solid_text(ui, "RED", FontId::new(34.0, display()), RED);
-        solid_text(ui, "j", FontId::new(44.0, FontFamily::Proportional), RED);
-    });
+    ui.label(
+        egui::RichText::new("REDj")
+            .font(FontId::new(40.0, logo_font()))
+            .color(RED),
+    );
 }
