@@ -129,9 +129,11 @@ fn ai_schedules_and_the_engine_executes() {
             AgentConfig::default(),
         ))
     });
-    // Keep the console answering while the model "thinks".
+    // Keep the console answering while the model "thinks", without moving
+    // the playhead: on a slow machine the track would otherwise pass the
+    // scripted bar 24 (or the autopilot step in) before the plan arrives.
     while !planner.is_finished() {
-        r.step(1);
+        r.console.poll();
         std::thread::sleep(Duration::from_millis(2));
     }
     assert!(planner.join().unwrap().unwrap(), "plan scheduled");
