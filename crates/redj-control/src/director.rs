@@ -364,7 +364,10 @@ impl Console {
                 s.loading = false;
             }
         }
-        // Requests from AI clients.
+        // Requests from AI clients. Replies go out after the live snapshot
+        // shows the result: a client acting on "ok" must not read a stale
+        // snapshot without the scheduled transition.
+        let mut replies = Vec::new();
         for p in self.session.take_proposals() {
             let reply = match self.build(&p.request) {
                 Ok((s, warnings)) if self.ai_on || p.by != "ai" => {
@@ -382,7 +385,13 @@ impl Console {
                     warnings: Vec::new(),
                 },
             };
-            let _ = p.reply.send(reply);
+            replies.push((p.reply, reply));
+        }
+        if !replies.is_empty() {
+            self.publish_live();
+            for (tx, reply) in replies {
+                let _ = tx.send(reply);
+            }
         }
         // Autopilot when the AI is late.
         if self.ai_on
